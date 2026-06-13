@@ -3,6 +3,7 @@
 [![ci](https://github.com/SaiRohithGuntupally/kubectl-why-pending/actions/workflows/ci.yml/badge.svg)](https://github.com/SaiRohithGuntupally/kubectl-why-pending/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/SaiRohithGuntupally/kubectl-why-pending)](https://github.com/SaiRohithGuntupally/kubectl-why-pending/releases)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![krew](https://img.shields.io/badge/krew-why--pending-326ce5)](https://krew.sigs.k8s.io/plugins/)
 
 > Stop `kubectl describe`-ing. Ask your cluster *why* a pod is stuck `Pending` — and get the fix.
 
@@ -58,18 +59,22 @@ the result like a teammate would.
 
 ## Install
 
+### Via [Krew](https://krew.sigs.k8s.io/) (recommended)
+
+`why-pending` is in the official krew-index:
+
+```sh
+kubectl krew update
+kubectl krew install why-pending
+kubectl why-pending --help
+```
+
 ### From source
 
 ```sh
 make build
 make install   # copies the binary onto your PATH as kubectl-why_pending
 kubectl why-pending --help
-```
-
-### Via Krew (once published)
-
-```sh
-kubectl krew install why-pending
 ```
 
 ## Usage

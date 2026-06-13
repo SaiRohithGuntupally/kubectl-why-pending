@@ -1,5 +1,7 @@
 # Why is my pod stuck Pending on bare metal? I built a kubectl plugin that just tells you.
 
+> **`kubectl krew install why-pending`** — now in the official krew-index.
+
 If you run Kubernetes on-prem, you know this moment: you `kubectl apply`, you
 `kubectl get pods`, and there it sits — `Pending`. No crash, no error, no log.
 Just a pod the scheduler quietly refuses to place, and a `kubectl describe` wall
@@ -85,11 +87,10 @@ blocker, it says so and points you at the dynamic causes it doesn't model
 ## Try it
 
 ```sh
-git clone https://github.com/SaiRohithGuntupally/kubectl-why-pending
-cd kubectl-why-pending && make install
-kubectl why-pending                 # every Pending pod in the namespace
-kubectl why-pending my-pod -n data  # one pod
-kubectl why-pending -A              # all namespaces
+kubectl krew install why-pending     # it's in the official krew-index
+kubectl why-pending                  # every Pending pod in the namespace
+kubectl why-pending my-pod -n data   # one pod
+kubectl why-pending -A               # all namespaces
 ```
 
 It's MIT-licensed and open source. If it misdiagnoses something on your cluster,
@@ -115,5 +116,6 @@ yet are exactly what I want to teach it next.
 > the cause in plain English, with the fix. Especially aimed at bare-metal/on-prem
 > where there's no autoscaler to paper over it. Pure, unit-tested engine; MIT.
 >
-> Feedback and "it got my cluster wrong" reports very welcome.
+> Install: `kubectl krew install why-pending`. Feedback and "it got my cluster
+> wrong" reports very welcome.
 > https://github.com/SaiRohithGuntupally/kubectl-why-pending
