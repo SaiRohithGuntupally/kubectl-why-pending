@@ -1,29 +1,45 @@
-# Krew plugin manifest. Fill in the release URLs + sha256 sums when you cut a
-# GitHub release, then submit to https://github.com/kubernetes-sigs/krew-index.
+# Krew plugin manifest. The release URLs point at the v0.2.0 GitHub release assets;
+# the sha256 sums match the tarballs in dist/. Submit to
+# https://github.com/kubernetes-sigs/krew-index after publishing the release.
 apiVersion: krew.googlecontainertools.github.com/v1alpha2
 kind: Plugin
 metadata:
   name: why-pending
 spec:
-  version: v0.1.0
+  version: v0.2.0
   homepage: https://github.com/sairohithg/kubectl-why-pending
   shortDescription: Explain why pods are stuck Pending, with on-prem causes.
   description: |
     Diagnoses unschedulable pods in plain English and suggests the fix.
     Calls out bare-metal causes cloud clusters hide: resource fragmentation,
-    control-plane taints, missing capacity, and unbound volumes.
+    control-plane taints, topology-spread skew, anti-affinity exhaustion,
+    missing capacity, and unbound volumes.
   platforms:
     - selector:
         matchLabels:
           os: darwin
           arch: arm64
-      uri: https://github.com/sairohithg/kubectl-why-pending/releases/download/v0.1.0/kubectl-why-pending_darwin_arm64.tar.gz
-      sha256: "<fill-in>"
+      uri: https://github.com/SaiRohithGuntupally/kubectl-why-pending/releases/download/v0.2.0/kubectl-why-pending_darwin_arm64.tar.gz
+      sha256: "73ca20b5a994e16d23c4d30277223697f53a8823df527948a0056d84f379b032"
+      bin: kubectl-why_pending
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      uri: https://github.com/SaiRohithGuntupally/kubectl-why-pending/releases/download/v0.2.0/kubectl-why-pending_darwin_amd64.tar.gz
+      sha256: "497cf7f1f0179bae581f10f5e39b12767364a92fda02f4c3340e555077e84f5b"
       bin: kubectl-why_pending
     - selector:
         matchLabels:
           os: linux
           arch: amd64
-      uri: https://github.com/sairohithg/kubectl-why-pending/releases/download/v0.1.0/kubectl-why-pending_linux_amd64.tar.gz
-      sha256: "<fill-in>"
+      uri: https://github.com/SaiRohithGuntupally/kubectl-why-pending/releases/download/v0.2.0/kubectl-why-pending_linux_amd64.tar.gz
+      sha256: "7b5f778bb9555dcfae6354c70751ecd420d68c8f395473d69693ff4f8a25ae76"
+      bin: kubectl-why_pending
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+      uri: https://github.com/SaiRohithGuntupally/kubectl-why-pending/releases/download/v0.2.0/kubectl-why-pending_linux_arm64.tar.gz
+      sha256: "9ca0038c2880c5bbac746610f635c9dbfb1c7dcde333f3fd356f3412a112c625"
       bin: kubectl-why_pending
