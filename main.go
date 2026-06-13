@@ -84,7 +84,7 @@ func run(client kubernetes.Interface, opts options) error {
 	}
 
 	// Gather cluster-wide state once and reuse it for every pod.
-	nodeViews, err := gatherNodeViews(ctx, client)
+	nodeViews, clusterPods, err := gatherNodeViews(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -95,6 +95,7 @@ func run(client kubernetes.Interface, opts options) error {
 		in := diagnose.Input{
 			Pod:            p,
 			Nodes:          nodeViews,
+			ClusterPods:    clusterPods,
 			SchedulerEvent: latestSchedulerEvent(ctx, client, p),
 			UnboundPVCs:    unboundPVCs(ctx, client, p),
 		}
@@ -156,17 +157,19 @@ func pendingPods(ctx context.Context, client kubernetes.Interface, opts options)
 }
 
 // gatherNodeViews lists nodes and sums the requests of pods already placed on
-// each, so the analyzer knows real free capacity.
-func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagnose.NodeView, error) {
+// each (for free-capacity math), and returns the placed pods (for topology /
+// affinity analysis).
+func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagnose.NodeView, []diagnose.PlacedPod, error) {
 	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	allPods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	used := map[string]diagnose.Resources{}
+	var placed []diagnose.PlacedPod
 	for i := range allPods.Items {
 		p := &allPods.Items[i]
 		if p.Spec.NodeName == "" {
@@ -180,13 +183,18 @@ func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagno
 		cur.CPUMilli += r.CPUMilli
 		cur.MemBytes += r.MemBytes
 		used[p.Spec.NodeName] = cur
+		placed = append(placed, diagnose.PlacedPod{
+			Namespace: p.Namespace,
+			NodeName:  p.Spec.NodeName,
+			Labels:    p.Labels,
+		})
 	}
 	views := make([]diagnose.NodeView, 0, len(nodes.Items))
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
 		views = append(views, diagnose.NodeView{Node: n, Used: used[n.Name]})
 	}
-	return views, nil
+	return views, placed, nil
 }
 
 func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) string {

@@ -43,10 +43,14 @@ the result like a teammate would.
 - **Insufficient free capacity** — not enough room now, even in aggregate.
 - **Untolerated taints** — including the classic control-plane taint on small clusters.
 - **nodeSelector / required nodeAffinity** mismatches.
+- **Pod topology spread** (`DoNotSchedule`) — computes the real skew across all
+  domains and tells you which under-filled zone/host needs a node.
+- **Inter-pod affinity / anti-affinity** (required) — including the classic
+  "one replica per host" that runs out of hosts.
 - **Cordoned / NotReady nodes** removed from scheduling.
 - **Unbound PersistentVolumeClaims** (with the WaitForFirstConsumer caveat).
 - Falls back to the raw scheduler event + dynamic-cause hints (priority/preemption,
-  topology spread, extended resources) when no static blocker is found.
+  extended resources) when no static blocker is found.
 
 ## Install
 
@@ -85,9 +89,9 @@ whole pipeline against a fake API.
 
 ## Roadmap
 
-- Pod topology-spread and inter-pod (anti-)affinity analysis.
 - Extended/custom resources (GPUs, hugepages).
 - `--watch` mode and a JSON output format.
+- Topology spread refinements (minDomains, nodeAffinityPolicy, matchLabelKeys).
 - Pro tier (planned): a fleet daemon that watches every cluster and alerts on
   Pending pods before anyone files a ticket.
 

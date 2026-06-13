@@ -47,8 +47,9 @@ type NodeView struct {
 type Input struct {
 	Pod            *corev1.Pod
 	Nodes          []NodeView
-	SchedulerEvent string   // latest FailedScheduling message, if any
-	UnboundPVCs    []string // referenced PVCs that are not Bound
+	ClusterPods    []PlacedPod // all placed pods, for topology/affinity analysis
+	SchedulerEvent string      // latest FailedScheduling message, if any
+	UnboundPVCs    []string    // referenced PVCs that are not Bound
 }
 
 // Result is the diagnosis for one pod.
@@ -85,6 +86,7 @@ func Analyze(in Input) Result {
 	taintSet := map[string]bool{}
 	eligible := 0 // nodes passing taint/selector/affinity/cordon
 	fit := 0      // eligible nodes that also have room
+	var eligibleNodes []*corev1.Node
 	var maxFreeCPU, maxFreeMem int64
 	var sumFreeCPU, sumFreeMem int64
 	var maxAllocCPU, maxAllocMem int64 // biggest single node, if it were empty
@@ -116,6 +118,7 @@ func Analyze(in Input) Result {
 		}
 
 		eligible++
+		eligibleNodes = append(eligibleNodes, node)
 		alloc := Allocatable(node)
 		if alloc.CPUMilli > maxAllocCPU {
 			maxAllocCPU = alloc.CPUMilli
@@ -251,6 +254,14 @@ func Analyze(in Input) Result {
 			})
 		}
 	}
+
+	// Cross-pod constraints: topology spread and inter-pod (anti-)affinity.
+	allNodes := make([]*corev1.Node, 0, len(in.Nodes))
+	for _, nv := range in.Nodes {
+		allNodes = append(allNodes, nv.Node)
+	}
+	res.Causes = append(res.Causes, AnalyzeTopologySpread(in.Pod, allNodes, eligibleNodes, in.ClusterPods)...)
+	res.Causes = append(res.Causes, AnalyzePodAffinity(in.Pod, eligibleNodes, in.ClusterPods)...)
 
 	// Honest about the limits of a static analysis.
 	if fit > 0 && len(res.Causes) == 0 {
