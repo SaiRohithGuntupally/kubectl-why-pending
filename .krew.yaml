@@ -1,0 +1,29 @@
+# Krew plugin manifest. Fill in the release URLs + sha256 sums when you cut a
+# GitHub release, then submit to https://github.com/kubernetes-sigs/krew-index.
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: why-pending
+spec:
+  version: v0.1.0
+  homepage: https://github.com/sairohithg/kubectl-why-pending
+  shortDescription: Explain why pods are stuck Pending, with on-prem causes.
+  description: |
+    Diagnoses unschedulable pods in plain English and suggests the fix.
+    Calls out bare-metal causes cloud clusters hide: resource fragmentation,
+    control-plane taints, missing capacity, and unbound volumes.
+  platforms:
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      uri: https://github.com/sairohithg/kubectl-why-pending/releases/download/v0.1.0/kubectl-why-pending_darwin_arm64.tar.gz
+      sha256: "<fill-in>"
+      bin: kubectl-why_pending
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      uri: https://github.com/sairohithg/kubectl-why-pending/releases/download/v0.1.0/kubectl-why-pending_linux_amd64.tar.gz
+      sha256: "<fill-in>"
+      bin: kubectl-why_pending

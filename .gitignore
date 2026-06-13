@@ -1,0 +1,4 @@
+/kubectl-why_pending
+*.test
+*.out
+.DS_Store
