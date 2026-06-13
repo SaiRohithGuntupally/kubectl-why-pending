@@ -5,7 +5,7 @@ metadata:
 spec:
   version: v0.2.0
   homepage: https://github.com/SaiRohithGuntupally/kubectl-why-pending
-  shortDescription: Explain why a pod is stuck Pending, with on-prem causes.
+  shortDescription: Explain why a pod is stuck Pending.
   description: |
     why-pending re-runs the scheduler's filtering logic locally and explains, in
     plain English, why a pod cannot be scheduled — and what to change.

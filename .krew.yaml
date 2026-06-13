@@ -8,7 +8,7 @@ metadata:
 spec:
   version: v0.2.0
   homepage: https://github.com/SaiRohithGuntupally/kubectl-why-pending
-  shortDescription: Explain why pods are stuck Pending, with on-prem causes.
+  shortDescription: Explain why a pod is stuck Pending.
   description: |
     Diagnoses unschedulable pods in plain English and suggests the fix.
     Calls out bare-metal causes cloud clusters hide: resource fragmentation,
