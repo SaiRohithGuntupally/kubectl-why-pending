@@ -29,3 +29,9 @@ jobs:
             dist/checksums.txt
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      # Auto-update the krew-index: renders .krew.yaml, fills uri+sha256 from the
+      # release assets just published above, and opens an auto-approved PR.
+      # Uses the hosted krew-release-bot service, so no krew-index token is needed.
+      - name: Update krew-index
+        uses: rajatjindal/krew-release-bot@v0.0.46

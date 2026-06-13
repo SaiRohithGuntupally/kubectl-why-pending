@@ -1,5 +1,12 @@
 # krew-index submission — how to open the PR
 
+> **Note:** the initial submission is already merged, and updates are now
+> **automated** by [krew-release-bot](https://github.com/rajatjindal/krew-release-bot)
+> via `.github/workflows/release.yml` — every `v*` tag auto-renders the root
+> `.krew.yaml` template and opens an auto-approved krew-index PR. The manual steps
+> below are kept only as a record of the one-time bootstrap; you shouldn't need
+> them again.
+
 This directory holds everything needed to add `why-pending` to the central
 [krew-index](https://github.com/kubernetes-sigs/krew-index), which is what makes
 `kubectl krew install why-pending` work for everyone.
