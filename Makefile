@@ -22,8 +22,9 @@ install: build
 	@echo "Installed to $(INSTALL_DIR)/$(BINARY)"
 	@echo "Ensure $(INSTALL_DIR) is on your PATH, then: kubectl why-pending --help"
 
-# Cross-compile release tarballs + checksums into dist/ (cache cleared between
-# targets to stay friendly on low-disk machines).
+# Cross-compile release tarballs + checksums into dist/.
+# On a low-disk machine, run `CLEAN_CACHE=1 make release` to clear the Go build
+# cache between targets; on CI leave it unset so the warm cache speeds builds.
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
 release:
 	rm -rf dist && mkdir -p dist
@@ -34,7 +35,7 @@ release:
 	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "-s -w" -o "$$stage/$(BINARY)" . ; \
 	  cp LICENSE README.md "$$stage/"; \
 	  tar -C "$$stage" -czf "dist/kubectl-why-pending_$${os}_$${arch}.tar.gz" $(BINARY) LICENSE README.md; \
-	  rm -rf "$$stage"; go clean -cache; \
+	  rm -rf "$$stage"; [ -n "$$CLEAN_CACHE" ] && go clean -cache || true; \
 	done
 	cd dist && shasum -a 256 *.tar.gz > checksums.txt && cat checksums.txt
 

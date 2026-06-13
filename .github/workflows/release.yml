@@ -1,0 +1,31 @@
+name: release
+
+# Cut a release by pushing a tag:  git tag v0.2.1 && git push origin v0.2.1
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # needed to create the GitHub Release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile tarballs + checksums
+        run: make release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true

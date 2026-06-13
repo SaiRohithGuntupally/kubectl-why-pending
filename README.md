@@ -1,5 +1,9 @@
 # kubectl-why-pending
 
+[![ci](https://github.com/SaiRohithGuntupally/kubectl-why-pending/actions/workflows/ci.yml/badge.svg)](https://github.com/SaiRohithGuntupally/kubectl-why-pending/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/SaiRohithGuntupally/kubectl-why-pending)](https://github.com/SaiRohithGuntupally/kubectl-why-pending/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 > Stop `kubectl describe`-ing. Ask your cluster *why* a pod is stuck `Pending` — and get the fix.
 
 A `kubectl` plugin that diagnoses unschedulable pods in plain English, with the
