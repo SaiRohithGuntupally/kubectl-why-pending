@@ -6,24 +6,41 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Resources is a coarse CPU (millicores) + memory (bytes) pair, which is all
-// the scheduler's resource-fit check cares about for the common cases.
+// Resources is the scheduler-relevant resource view: CPU (millicores), memory
+// (bytes), and any extended resources (e.g. nvidia.com/gpu, hugepages-2Mi) keyed
+// by name. Extended quantities are whole-number counts (or bytes for hugepages).
 type Resources struct {
 	CPUMilli int64
 	MemBytes int64
+	Extended map[string]int64
+}
+
+// isStandardResource reports whether a resource is one the scheduler accounts for
+// specially (CPU/memory/ephemeral-storage); everything else is "extended".
+func isStandardResource(name corev1.ResourceName) bool {
+	switch name {
+	case corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage:
+		return true
+	}
+	return false
 }
 
 // PodRequests returns the effective resource request for a pod: the larger of
 // (sum of normal container requests) and (max of any single init container),
 // which matches how the scheduler reserves space.
 func PodRequests(pod *corev1.Pod) Resources {
-	var sum Resources
+	sum := Resources{Extended: map[string]int64{}}
 	for i := range pod.Spec.Containers {
 		req := pod.Spec.Containers[i].Resources.Requests
 		sum.CPUMilli += req.Cpu().MilliValue()
 		sum.MemBytes += req.Memory().Value()
+		for name, q := range req {
+			if !isStandardResource(name) {
+				sum.Extended[string(name)] += q.Value()
+			}
+		}
 	}
-	var initMax Resources
+	initMax := Resources{Extended: map[string]int64{}}
 	for i := range pod.Spec.InitContainers {
 		req := pod.Spec.InitContainers[i].Resources.Requests
 		if v := req.Cpu().MilliValue(); v > initMax.CPUMilli {
@@ -32,6 +49,13 @@ func PodRequests(pod *corev1.Pod) Resources {
 		if v := req.Memory().Value(); v > initMax.MemBytes {
 			initMax.MemBytes = v
 		}
+		for name, q := range req {
+			if !isStandardResource(name) {
+				if v := q.Value(); v > initMax.Extended[string(name)] {
+					initMax.Extended[string(name)] = v
+				}
+			}
+		}
 	}
 	if initMax.CPUMilli > sum.CPUMilli {
 		sum.CPUMilli = initMax.CPUMilli
@@ -39,15 +63,28 @@ func PodRequests(pod *corev1.Pod) Resources {
 	if initMax.MemBytes > sum.MemBytes {
 		sum.MemBytes = initMax.MemBytes
 	}
+	for name, v := range initMax.Extended {
+		if v > sum.Extended[name] {
+			sum.Extended[name] = v
+		}
+	}
 	return sum
 }
 
-// Allocatable is the schedulable capacity a node advertises.
+// Allocatable is the schedulable capacity a node advertises, including any
+// extended resources (GPUs, hugepages, custom device-plugin resources).
 func Allocatable(node *corev1.Node) Resources {
-	return Resources{
+	r := Resources{
 		CPUMilli: node.Status.Allocatable.Cpu().MilliValue(),
 		MemBytes: node.Status.Allocatable.Memory().Value(),
+		Extended: map[string]int64{},
 	}
+	for name, q := range node.Status.Allocatable {
+		if !isStandardResource(name) {
+			r.Extended[string(name)] = q.Value()
+		}
+	}
+	return r
 }
 
 // FormatCPU renders millicores as a human string ("1500m" or "2").

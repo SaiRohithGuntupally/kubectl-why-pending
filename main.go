@@ -182,6 +182,12 @@ func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagno
 		cur := used[p.Spec.NodeName]
 		cur.CPUMilli += r.CPUMilli
 		cur.MemBytes += r.MemBytes
+		if cur.Extended == nil {
+			cur.Extended = map[string]int64{}
+		}
+		for name, v := range r.Extended {
+			cur.Extended[name] += v
+		}
 		used[p.Spec.NodeName] = cur
 		placed = append(placed, diagnose.PlacedPod{
 			Namespace: p.Namespace,

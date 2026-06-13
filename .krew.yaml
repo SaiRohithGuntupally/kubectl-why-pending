@@ -17,7 +17,8 @@ spec:
 
     It calls out the causes bare-metal / on-prem clusters hit that cloud clusters
     hide behind the autoscaler: resource fragmentation (capacity exists, but not
-    on any single node), control-plane taints eating a small cluster, topology
+    on any single node), control-plane taints eating a small cluster, GPU /
+    extended resources (no node provides it, or none has enough free), topology
     spread skew, anti-affinity running out of hosts, a pod larger than any node,
     nodeSelector / nodeAffinity mismatches, cordoned / NotReady nodes, and unbound
     PersistentVolumeClaims. When no static blocker is found it points at the

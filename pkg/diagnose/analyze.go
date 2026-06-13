@@ -86,7 +86,7 @@ func Analyze(in Input) Result {
 	taintSet := map[string]bool{}
 	eligible := 0 // nodes passing taint/selector/affinity/cordon
 	fit := 0      // eligible nodes that also have room
-	var eligibleNodes []*corev1.Node
+	var eligibleViews []NodeView
 	var maxFreeCPU, maxFreeMem int64
 	var sumFreeCPU, sumFreeMem int64
 	var maxAllocCPU, maxAllocMem int64 // biggest single node, if it were empty
@@ -118,7 +118,7 @@ func Analyze(in Input) Result {
 		}
 
 		eligible++
-		eligibleNodes = append(eligibleNodes, node)
+		eligibleViews = append(eligibleViews, nv)
 		alloc := Allocatable(node)
 		if alloc.CPUMilli > maxAllocCPU {
 			maxAllocCPU = alloc.CPUMilli
@@ -255,10 +255,17 @@ func Analyze(in Input) Result {
 		}
 	}
 
+	// Extended resources (GPUs, hugepages, custom device-plugin resources).
+	res.Causes = append(res.Causes, AnalyzeExtendedResources(in.Pod, eligibleViews)...)
+
 	// Cross-pod constraints: topology spread and inter-pod (anti-)affinity.
 	allNodes := make([]*corev1.Node, 0, len(in.Nodes))
 	for _, nv := range in.Nodes {
 		allNodes = append(allNodes, nv.Node)
+	}
+	eligibleNodes := make([]*corev1.Node, 0, len(eligibleViews))
+	for _, nv := range eligibleViews {
+		eligibleNodes = append(eligibleNodes, nv.Node)
 	}
 	res.Causes = append(res.Causes, AnalyzeTopologySpread(in.Pod, allNodes, eligibleNodes, in.ClusterPods)...)
 	res.Causes = append(res.Causes, AnalyzePodAffinity(in.Pod, eligibleNodes, in.ClusterPods)...)
