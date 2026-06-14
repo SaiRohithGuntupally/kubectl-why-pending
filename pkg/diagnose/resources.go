@@ -10,9 +10,9 @@ import (
 // (bytes), and any extended resources (e.g. nvidia.com/gpu, hugepages-2Mi) keyed
 // by name. Extended quantities are whole-number counts (or bytes for hugepages).
 type Resources struct {
-	CPUMilli int64
-	MemBytes int64
-	Extended map[string]int64
+	CPUMilli int64            `json:"cpuMilli"`
+	MemBytes int64            `json:"memBytes"`
+	Extended map[string]int64 `json:"extended,omitempty"`
 }
 
 // isStandardResource reports whether a resource is one the scheduler accounts for

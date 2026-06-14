@@ -28,10 +28,17 @@ USAGE:
 FLAGS:
   -n, --namespace <ns>     namespace (default: current context namespace)
   -A, --all-namespaces     scan Pending pods in all namespaces
+  -o, --output <format>    output format: text (default), json, or yaml
       --context <name>     kubeconfig context to use
       --kubeconfig <path>  path to kubeconfig
       --no-color           disable colored output
   -h, --help               show this help
+
+EXIT CODES:
+  0  no blocking cause found (or no Pending pods)
+  1  at least one Pending pod has a blocking cause
+  2  usage error
+  3  runtime error (e.g. could not reach the cluster)
 `
 
 type options struct {
@@ -41,6 +48,7 @@ type options struct {
 	kubeconfig    string
 	podName       string
 	noColor       bool
+	output        string // "", "text", "json", "yaml"
 }
 
 func main() {
@@ -50,46 +58,60 @@ func main() {
 		fmt.Fprint(os.Stderr, "\n"+usage)
 		os.Exit(2)
 	}
+	switch opts.output {
+	case "", "text", "json", "yaml":
+	default:
+		fmt.Fprintf(os.Stderr, "error: invalid --output %q (want text, json, or yaml)\n", opts.output)
+		os.Exit(2)
+	}
 
 	client, defaultNS, err := newClient(opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: could not connect to cluster:", err)
-		os.Exit(1)
+		os.Exit(3)
 	}
 	if opts.namespace == "" {
 		opts.namespace = defaultNS
 	}
 
-	if err := run(client, opts); err != nil {
+	blockers, err := run(client, opts)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		os.Exit(3)
+	}
+	if blockers {
+		os.Exit(1) // pending pods with a blocking cause — scriptable signal
 	}
 }
 
-func run(client kubernetes.Interface, opts options) error {
+// run diagnoses the pending pods and returns whether any has a blocking cause.
+func run(client kubernetes.Interface, opts options) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	pending, err := pendingPods(ctx, client, opts)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(pending) == 0 {
+		if structured(opts.output) {
+			return false, emit(opts.output, []diagnose.Result{})
+		}
 		scope := "namespace " + opts.namespace
 		if opts.allNamespaces {
 			scope = "any namespace"
 		}
 		fmt.Printf("No Pending pods found in %s. 🎉\n", scope)
-		return nil
+		return false, nil
 	}
 
 	// Gather cluster-wide state once and reuse it for every pod.
 	nodeViews, clusterPods, err := gatherNodeViews(ctx, client)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	w := newWriter(opts.noColor)
+	results := make([]diagnose.Result, 0, len(pending))
 	for i := range pending {
 		p := &pending[i]
 		in := diagnose.Input{
@@ -99,9 +121,28 @@ func run(client kubernetes.Interface, opts options) error {
 			SchedulerEvent: latestSchedulerEvent(ctx, client, p),
 			UnboundPVCs:    unboundPVCs(ctx, client, p),
 		}
-		w.report(diagnose.Analyze(in))
+		results = append(results, diagnose.Analyze(in))
 	}
-	return nil
+
+	if structured(opts.output) {
+		if err := emit(opts.output, results); err != nil {
+			return false, err
+		}
+	} else {
+		w := newWriter(opts.noColor)
+		for _, r := range results {
+			w.report(r)
+		}
+	}
+
+	blockers := false
+	for _, r := range results {
+		if r.HasBlocker() {
+			blockers = true
+			break
+		}
+	}
+	return blockers, nil
 }
 
 func newClient(opts options) (kubernetes.Interface, string, error) {

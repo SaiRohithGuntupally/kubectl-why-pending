@@ -65,7 +65,17 @@ func TestRun_EndToEnd(t *testing.T) {
 	)
 
 	opts := options{namespace: "default", noColor: true}
-	if err := run(client, opts); err != nil {
+	blockers, err := run(client, opts)
+	if err != nil {
 		t.Fatalf("run failed: %v", err)
+	}
+	if !blockers {
+		t.Error("expected a blocking cause (fragmentation), got blockers=false")
+	}
+
+	// JSON output should be valid and carry the structured fields.
+	jsonOpts := options{namespace: "default", output: "json"}
+	if _, err := run(client, jsonOpts); err != nil {
+		t.Fatalf("json run failed: %v", err)
 	}
 }

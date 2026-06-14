@@ -30,6 +30,22 @@ Pod default/analytics-7d9  (requests 2 CPU / 512Mi memory)
       fix: Add a matching toleration, or remove the taint if the node should accept workloads.
 ```
 
+…or a GPU pod that can't find a GPU:
+
+```
+$ kubectl why-pending ml-train-0
+
+Pod default/ml-train-0  (requests 2 CPU / 4.0Gi memory)
+────────────────────────────────────────────────────────────────
+  ✗ No eligible node provides nvidia.com/gpu
+      The pod requests 1 of "nvidia.com/gpu", but no schedulable node advertises it.
+      Common on-prem causes: the device plugin (e.g. the NVIDIA device plugin for
+      nvidia.com/gpu) isn't installed or healthy, there's no node with that hardware,
+      or the only nodes that have it were filtered out by a taint/selector/affinity.
+      fix: Install/repair the device-plugin DaemonSet, add a node that advertises
+           nvidia.com/gpu, or (if those nodes are tainted) add the matching toleration.
+```
+
 ## Why
 
 Every Kubernetes user eventually stares at a `Pending` pod and a wall of
@@ -88,7 +104,38 @@ kubectl why-pending my-pod              # one pod
 kubectl why-pending -n data my-pod      # in a namespace
 kubectl why-pending -A                  # all namespaces
 kubectl why-pending --no-color          # plain output for logs/CI
+kubectl why-pending -o json             # machine-readable (also: -o yaml)
 ```
+
+## Machine-readable output
+
+Kubernetes has wanted a machine-readable "why pending" since 2017
+([kubernetes/kubernetes#53908](https://github.com/kubernetes/kubernetes/issues/53908))
+and never shipped it. `-o json` (or `-o yaml`) is that: the full diagnosis as
+structured data, including a **per-node breakdown** of which node was filtered by
+which predicate — ready for CI gates, dashboards, or `jq`.
+
+```jsonc
+[
+  {
+    "namespace": "default",
+    "pod": "api-server-0",
+    "request": { "cpuMilli": 2000, "memBytes": 536870912 },
+    "causes": [
+      { "severity": "blocker", "title": "Insufficient free capacity right now", "detail": "…", "fix": "…" },
+      { "severity": "warning", "title": "1/2 node(s) have taints the pod doesn't tolerate", "detail": "…", "fix": "…" }
+    ],
+    "nodes": [
+      { "name": "cp-1",     "schedulable": false, "reason": "untolerated taint: node-role.kubernetes.io/control-plane" },
+      { "name": "worker-1", "schedulable": false, "reason": "insufficient CPU" }
+    ]
+  }
+]
+```
+
+**Exit codes** make it scriptable: `0` = no blocking cause, `1` = at least one
+Pending pod is blocked, `2` = usage error, `3` = runtime error. So
+`kubectl why-pending -A -o json || alert` just works.
 
 ## How it works
 
@@ -101,7 +148,9 @@ whole pipeline against a fake API.
 
 ## Roadmap
 
-- `--watch` mode and a JSON output format.
+- `--watch` mode.
+- A Prometheus exporter that emits the diagnosed reason as a metric label
+  (kube-state-metrics only exposes *that* a pod is unschedulable, not *why*).
 - Topology spread refinements (minDomains, nodeAffinityPolicy, matchLabelKeys).
 - Pod priority / preemption awareness.
 - Pro tier (planned): a fleet daemon that watches every cluster and alerts on

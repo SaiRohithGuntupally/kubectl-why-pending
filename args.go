@@ -29,6 +29,8 @@ func parseArgs(args []string) (options, error) {
 			o.noColor = true
 		case a == "-n" || a == "--namespace":
 			o.namespace, i, err = needValue(i, a)
+		case a == "-o" || a == "--output":
+			o.output, i, err = needValue(i, a)
 		case a == "--context":
 			o.context, i, err = needValue(i, a)
 		case a == "--kubeconfig":

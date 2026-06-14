@@ -3,6 +3,7 @@ package diagnose
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,18 +29,44 @@ func (s Severity) Icon() string {
 	}
 }
 
+// String renders the severity for structured output.
+func (s Severity) String() string {
+	switch s {
+	case Blocker:
+		return "blocker"
+	case Warning:
+		return "warning"
+	default:
+		return "info"
+	}
+}
+
+// MarshalJSON emits the severity as its name ("blocker"/"warning"/"info")
+// rather than an opaque integer.
+func (s Severity) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.Quote(s.String())), nil
+}
+
 // Cause is a single human-readable finding with a suggested fix.
 type Cause struct {
-	Severity Severity
-	Title    string
-	Detail   string
-	Fix      string
+	Severity Severity `json:"severity"`
+	Title    string   `json:"title"`
+	Detail   string   `json:"detail"`
+	Fix      string   `json:"fix"`
 }
 
 // NodeView pairs a node with the resources already requested by pods on it.
 type NodeView struct {
 	Node *corev1.Node
 	Used Resources
+}
+
+// NodeVerdict is the per-node breakdown — the "nodes evaluated, and why each was
+// filtered" view that consumers (and kubernetes/kubernetes#53908) ask for.
+type NodeVerdict struct {
+	Name        string `json:"name"`
+	Schedulable bool   `json:"schedulable"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // Input is everything Analyze needs — gathered once by the caller so the engine
@@ -54,11 +81,22 @@ type Input struct {
 
 // Result is the diagnosis for one pod.
 type Result struct {
-	Namespace      string
-	PodName        string
-	Request        Resources
-	Causes         []Cause
-	SchedulerEvent string
+	Namespace      string        `json:"namespace"`
+	PodName        string        `json:"pod"`
+	Request        Resources     `json:"request"`
+	Causes         []Cause       `json:"causes"`
+	Nodes          []NodeVerdict `json:"nodes,omitempty"`
+	SchedulerEvent string        `json:"schedulerEvent,omitempty"`
+}
+
+// HasBlocker reports whether any cause is a Blocker (used for the CLI exit code).
+func (r Result) HasBlocker() bool {
+	for _, c := range r.Causes {
+		if c.Severity == Blocker {
+			return true
+		}
+	}
+	return false
 }
 
 // Analyze runs a lightweight re-implementation of the scheduler's filtering to
@@ -96,24 +134,31 @@ func Analyze(in Input) Result {
 		switch {
 		case IsCordoned(node):
 			counts["cordoned"]++
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "cordoned (SchedulingDisabled)"})
 			continue
 		case !IsReady(node):
 			counts["notready"]++
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "NotReady"})
 			continue
 		}
 		if bad := UntoleratedTaints(in.Pod, node); len(bad) > 0 {
 			counts["taint"]++
+			keys := make([]string, 0, len(bad))
 			for _, t := range bad {
 				taintSet[fmt.Sprintf("%s=%s:%s", t.Key, t.Value, t.Effect)] = true
+				keys = append(keys, t.Key)
 			}
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "untolerated taint: " + strings.Join(keys, ",")})
 			continue
 		}
 		if !MatchesNodeSelector(in.Pod, node) {
 			counts["selector"]++
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "nodeSelector mismatch"})
 			continue
 		}
 		if !MatchesNodeAffinity(in.Pod, node) {
 			counts["affinity"]++
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "nodeAffinity mismatch"})
 			continue
 		}
 
@@ -144,13 +189,18 @@ func Analyze(in Input) Result {
 		memOK := freeMem >= req.MemBytes
 		if cpuOK && memOK {
 			fit++
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, true, "fits (CPU/memory)"})
 		} else {
+			var lack []string
 			if !cpuOK {
 				counts["insufficient-cpu"]++
+				lack = append(lack, "CPU")
 			}
 			if !memOK {
 				counts["insufficient-mem"]++
+				lack = append(lack, "memory")
 			}
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "insufficient " + strings.Join(lack, "+")})
 		}
 	}
 
