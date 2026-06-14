@@ -1,8 +1,3 @@
-# Template for krew-release-bot (https://github.com/rajatjindal/krew-release-bot).
-# On each tag push, the release workflow runs the bot, which renders this template,
-# fills in every platform's uri + sha256 from the published release assets, and
-# opens an auto-approved PR to kubernetes-sigs/krew-index. Do not hard-code the
-# version or sums here — {{ .TagName }} and addURIAndSha handle that per release.
 apiVersion: krew.googlecontainertools.github.com/v1alpha2
 kind: Plugin
 metadata:

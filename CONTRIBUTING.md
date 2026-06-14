@@ -68,8 +68,16 @@ git tag v0.3.0 && git push origin v0.3.0
 
 That triggers `.github/workflows/release.yml`, which cross-compiles all four
 platforms, publishes a GitHub Release with checksums, and runs
-[krew-release-bot](https://github.com/rajatjindal/krew-release-bot) to open an
-auto-approved PR to krew-index. No manual manifest edits.
+[krew-release-bot](https://github.com/rajatjindal/krew-release-bot) to open a PR
+to krew-index. No manual manifest edits.
+
+**Keep `.krew.yaml` minimal.** krew-index auto-merges a PR only when it's a
+*straightforward version bump* — i.e. only the `version` and the per-platform
+`uri`/`sha256` change between releases. Anything else (comments, description
+edits, and especially `{{ .TagName }}` inside a comment, which renders into the
+file and changes every release) makes the bot flag it for human review. Edit the
+`shortDescription`/`description` only in a deliberate standalone PR, not as part
+of a version bump.
 
 ## License
 
