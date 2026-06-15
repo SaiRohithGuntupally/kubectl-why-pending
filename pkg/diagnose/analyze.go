@@ -76,7 +76,8 @@ type Input struct {
 	Nodes          []NodeView
 	ClusterPods    []PlacedPod // all placed pods, for topology/affinity analysis
 	SchedulerEvent string      // latest FailedScheduling message, if any
-	UnboundPVCs    []string    // referenced PVCs that are not Bound
+	UnboundPVCs    []string    // referenced PVCs that exist but are not Bound
+	MissingPVCs    []string    // referenced PVCs that don't exist at all
 }
 
 // Result is the diagnosis for one pod.
@@ -108,6 +109,15 @@ func Analyze(in Input) Result {
 		PodName:        in.Pod.Name,
 		Request:        req,
 		SchedulerEvent: in.SchedulerEvent,
+	}
+
+	if len(in.MissingPVCs) > 0 {
+		res.Causes = append(res.Causes, Cause{
+			Severity: Blocker,
+			Title:    "PersistentVolumeClaim(s) not found",
+			Detail:   fmt.Sprintf("The pod references PVC(s) that do not exist: %s.", strings.Join(in.MissingPVCs, ", ")),
+			Fix:      "Create the missing PVC(s), or correct the volume claim name in the pod spec.",
+		})
 	}
 
 	if len(in.UnboundPVCs) > 0 {

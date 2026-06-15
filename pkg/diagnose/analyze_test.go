@@ -149,6 +149,18 @@ func TestNodeSelectorMismatch(t *testing.T) {
 	}
 }
 
+func TestMissingPVC(t *testing.T) {
+	p := pod("100m", "64Mi")
+	r := Analyze(Input{
+		Pod:         p,
+		Nodes:       []NodeView{{Node: readyNode("n1", "4", "8Gi")}},
+		MissingPVCs: []string{"data-demo-0"},
+	})
+	if !hasCause(r, "PersistentVolumeClaim(s) not found") {
+		t.Fatalf("expected missing-PVC cause, got:\n%s", titles(r))
+	}
+}
+
 func TestUnboundPVC(t *testing.T) {
 	p := pod("100m", "64Mi")
 	r := Analyze(Input{
