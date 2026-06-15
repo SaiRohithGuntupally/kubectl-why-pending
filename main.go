@@ -114,12 +114,14 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 	results := make([]diagnose.Result, 0, len(pending))
 	for i := range pending {
 		p := &pending[i]
+		missing, unbound := unboundPVCs(ctx, client, p)
 		in := diagnose.Input{
 			Pod:            p,
 			Nodes:          nodeViews,
 			ClusterPods:    clusterPods,
 			SchedulerEvent: latestSchedulerEvent(ctx, client, p),
-			UnboundPVCs:    unboundPVCs(ctx, client, p),
+			MissingPVCs:    missing,
+			UnboundPVCs:    unbound,
 		}
 		results = append(results, diagnose.Analyze(in))
 	}
@@ -177,6 +179,10 @@ func pendingPods(ctx context.Context, client kubernetes.Interface, opts options)
 		p, err := client.CoreV1().Pods(ns).Get(ctx, opts.podName, metav1.GetOptions{})
 		if err != nil {
 			return nil, err
+		}
+		if p.Status.Phase != corev1.PodPending || p.Spec.NodeName != "" {
+			fmt.Fprintf(os.Stderr, "Pod %s/%s is %s, not Pending — nothing to diagnose.\n", p.Namespace, p.Name, p.Status.Phase)
+			return nil, nil
 		}
 		return []corev1.Pod{*p}, nil
 	}
@@ -270,17 +276,18 @@ func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *c
 	return msg
 }
 
-func unboundPVCs(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) []string {
-	var unbound []string
+func unboundPVCs(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) (missing, unbound []string) {
 	for _, v := range p.Spec.Volumes {
 		if v.PersistentVolumeClaim == nil {
 			continue
 		}
 		name := v.PersistentVolumeClaim.ClaimName
 		pvc, err := client.CoreV1().PersistentVolumeClaims(p.Namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil || pvc.Status.Phase != corev1.ClaimBound {
+		if err != nil {
+			missing = append(missing, name)
+		} else if pvc.Status.Phase != corev1.ClaimBound {
 			unbound = append(unbound, name)
 		}
 	}
-	return unbound
+	return
 }
