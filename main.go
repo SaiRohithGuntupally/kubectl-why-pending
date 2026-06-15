@@ -11,6 +11,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -180,8 +181,12 @@ func pendingPods(ctx context.Context, client kubernetes.Interface, opts options)
 		if err != nil {
 			return nil, err
 		}
-		if p.Status.Phase != corev1.PodPending || p.Spec.NodeName != "" {
+		if p.Status.Phase != corev1.PodPending {
 			fmt.Fprintf(os.Stderr, "Pod %s/%s is %s, not Pending — nothing to diagnose.\n", p.Namespace, p.Name, p.Status.Phase)
+			return nil, nil
+		}
+		if p.Spec.NodeName != "" {
+			fmt.Fprintf(os.Stderr, "Pod %s/%s is already scheduled to node %q (Pending on the kubelet, not the scheduler) — nothing to diagnose.\n", p.Namespace, p.Name, p.Spec.NodeName)
 			return nil, nil
 		}
 		return []corev1.Pod{*p}, nil
@@ -283,9 +288,12 @@ func unboundPVCs(ctx context.Context, client kubernetes.Interface, p *corev1.Pod
 		}
 		name := v.PersistentVolumeClaim.ClaimName
 		pvc, err := client.CoreV1().PersistentVolumeClaims(p.Namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
+		switch {
+		case apierrors.IsNotFound(err):
 			missing = append(missing, name)
-		} else if pvc.Status.Phase != corev1.ClaimBound {
+		case err != nil:
+			// Some other error (RBAC, transient) — don't mislabel it as missing.
+		case pvc.Status.Phase != corev1.ClaimBound:
 			unbound = append(unbound, name)
 		}
 	}
