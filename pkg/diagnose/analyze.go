@@ -229,7 +229,7 @@ func Analyze(in Input) Result {
 
 	if n := counts["notready"]; n > 0 {
 		res.Causes = append(res.Causes, Cause{
-			Severity: Warning,
+			Severity: severityIf(eligible == 0, Blocker, Warning),
 			Title:    fmt.Sprintf("%d/%d node(s) NotReady", n, total),
 			Detail:   "NotReady nodes can't accept new pods (kubelet down, network/CNI not up, or disk/memory pressure).",
 			Fix:      "kubectl get nodes; then `kubectl describe node <name>` and check the kubelet/CNI on the affected node.",
@@ -330,14 +330,28 @@ func Analyze(in Input) Result {
 	res.Causes = append(res.Causes, AnalyzeTopologySpread(in.Pod, allNodes, eligibleNodes, in.ClusterPods)...)
 	res.Causes = append(res.Causes, AnalyzePodAffinity(in.Pod, eligibleNodes, in.ClusterPods)...)
 
-	// Honest about the limits of a static analysis.
-	if fit > 0 && len(res.Causes) == 0 {
-		res.Causes = append(res.Causes, Cause{
-			Severity: Info,
-			Title:    fmt.Sprintf("%d node(s) look like they should fit", fit),
-			Detail:   "Static analysis didn't find a hard blocker. The cause is likely dynamic: pod priority/preemption, pod topology spread or pod (anti-)affinity, extended/custom resources (GPUs), or simply a very recent scheduling attempt.",
-			Fix:      "Read the scheduler event below, and check `kubectl describe pod` for topology-spread or pod-affinity constraints.",
-		})
+	// Honest about the limits of a static analysis. Whenever no specific cause
+	// was found, say so explicitly rather than emitting an empty diagnosis —
+	// the wording differs depending on whether any node looked schedulable.
+	if len(res.Causes) == 0 {
+		if fit > 0 {
+			res.Causes = append(res.Causes, Cause{
+				Severity: Info,
+				Title:    fmt.Sprintf("%d node(s) look like they should fit", fit),
+				Detail:   "Static analysis didn't find a hard blocker. The cause is likely dynamic: pod priority/preemption, pod topology spread or pod (anti-)affinity, extended/custom resources (GPUs), or simply a very recent scheduling attempt.",
+				Fix:      "Read the scheduler event below, and check `kubectl describe pod` for topology-spread or pod-affinity constraints.",
+			})
+		} else {
+			// Defensive: every fit==0 path above should already have recorded a
+			// cause, so reaching here means a blocker we don't model yet. Stay
+			// honest instead of printing "No blocking cause found".
+			res.Causes = append(res.Causes, Cause{
+				Severity: Info,
+				Title:    "Could not determine a static cause",
+				Detail:   "No eligible node could host this pod, but none of the causes this tool models (capacity, taints, selectors/affinity, extended resources, topology spread, pod affinity, PVCs, node health) matched. The reason is likely dynamic or not yet modeled here.",
+				Fix:      "Read the scheduler event below, and run `kubectl describe pod` / `kubectl get events` for the scheduler's own explanation.",
+			})
+		}
 	}
 
 	sortCauses(res.Causes)

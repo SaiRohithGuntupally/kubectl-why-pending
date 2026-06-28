@@ -180,3 +180,57 @@ func TestHealthyFitFallsBackToDynamic(t *testing.T) {
 		t.Fatalf("expected dynamic-cause fallback, got:\n%s", titles(r))
 	}
 }
+
+// notReadyNode returns a node that has capacity but reports NotReady.
+func notReadyNode(name, cpu, mem string) *corev1.Node {
+	n := readyNode(name, cpu, mem)
+	n.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
+	return n
+}
+
+func TestAllNodesNotReadyIsABlocker(t *testing.T) {
+	// Every node is NotReady => there is nowhere to schedule, so the diagnosis
+	// must be a Blocker (and HasBlocker must be true for the exit code), not a
+	// soft warning that exits 0.
+	p := pod("100m", "64Mi")
+	r := Analyze(Input{Pod: p, Nodes: []NodeView{
+		{Node: notReadyNode("n1", "4", "8Gi")},
+		{Node: notReadyNode("n2", "4", "8Gi")},
+	}})
+	if !hasCause(r, "NotReady") {
+		t.Fatalf("expected NotReady cause, got:\n%s", titles(r))
+	}
+	if !r.HasBlocker() {
+		t.Fatalf("all-NotReady cluster must be a Blocker, got:\n%s", titles(r))
+	}
+}
+
+func TestSomeNodesNotReadyStaysWarning(t *testing.T) {
+	// One NotReady node, but a healthy node can host the pod => NotReady is only
+	// a contributing warning, not the blocker.
+	p := pod("100m", "64Mi")
+	r := Analyze(Input{Pod: p, Nodes: []NodeView{
+		{Node: notReadyNode("n1", "4", "8Gi")},
+		{Node: readyNode("n2", "4", "8Gi")},
+	}})
+	if r.HasBlocker() {
+		t.Fatalf("a healthy node exists; NotReady should not be a blocker, got:\n%s", titles(r))
+	}
+}
+
+func TestNeverEmptyDiagnosis(t *testing.T) {
+	// Regression guard: Analyze must always return at least one cause so the
+	// report never prints an empty diagnosis.
+	cases := map[string]Input{
+		"healthy fit": {Pod: pod("100m", "64Mi"), Nodes: []NodeView{{Node: readyNode("n1", "4", "8Gi")}}},
+		"no nodes":    {Pod: pod("100m", "64Mi")},
+		"all notready": {Pod: pod("100m", "64Mi"), Nodes: []NodeView{
+			{Node: notReadyNode("n1", "4", "8Gi")},
+		}},
+	}
+	for name, in := range cases {
+		if r := Analyze(in); len(r.Causes) == 0 {
+			t.Errorf("%s: expected a non-empty diagnosis, got zero causes", name)
+		}
+	}
+}
