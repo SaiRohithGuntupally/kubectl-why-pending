@@ -43,7 +43,7 @@ func TestExtended_NoNodeProvides(t *testing.T) {
 	p := gpuPod(1)
 	// Eligible nodes exist but none advertises a GPU.
 	eligible := []NodeView{{Node: readyNode("n1", "8", "32Gi")}}
-	causes := AnalyzeExtendedResources(p, eligible)
+	causes := AnalyzeExtendedResources(p, eligible, nil)
 	if len(causes) != 1 || causes[0].Title != "No eligible node provides nvidia.com/gpu" {
 		t.Fatalf("expected a 'no node provides' cause, got %+v", causes)
 	}
@@ -56,7 +56,7 @@ func TestExtended_Insufficient(t *testing.T) {
 		{Node: gpuNode("g1", 2), Used: Resources{Extended: map[string]int64{gpuName: 2}}},
 		{Node: gpuNode("g2", 2), Used: Resources{Extended: map[string]int64{gpuName: 2}}},
 	}
-	causes := AnalyzeExtendedResources(p, eligible)
+	causes := AnalyzeExtendedResources(p, eligible, nil)
 	if len(causes) == 0 || causes[0].Title != "Insufficient nvidia.com/gpu" {
 		t.Fatalf("expected insufficient-gpu cause, got %+v", causes)
 	}
@@ -66,7 +66,7 @@ func TestExtended_Fits(t *testing.T) {
 	// A node with a free GPU — no extended-resource cause.
 	p := gpuPod(1)
 	eligible := []NodeView{{Node: gpuNode("g1", 4), Used: Resources{Extended: map[string]int64{gpuName: 1}}}}
-	if c := AnalyzeExtendedResources(p, eligible); len(c) != 0 {
+	if c := AnalyzeExtendedResources(p, eligible, nil); len(c) != 0 {
 		t.Fatalf("expected no cause, got %+v", c)
 	}
 }

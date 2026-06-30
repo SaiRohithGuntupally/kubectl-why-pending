@@ -107,7 +107,7 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 	}
 
 	// Gather cluster-wide state once and reuse it for every pod.
-	nodeViews, clusterPods, err := gatherNodeViews(ctx, client)
+	nodeViews, clusterPods, chain, err := gatherNodeViews(ctx, client)
 	if err != nil {
 		return false, err
 	}
@@ -123,6 +123,7 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 			SchedulerEvent: latestSchedulerEvent(ctx, client, p),
 			MissingPVCs:    missing,
 			UnboundPVCs:    unbound,
+			Chain:          &chain,
 		}
 		results = append(results, diagnose.Analyze(in))
 	}
@@ -210,16 +211,17 @@ func pendingPods(ctx context.Context, client kubernetes.Interface, opts options)
 
 // gatherNodeViews lists nodes and sums the requests of pods already placed on
 // each (for free-capacity math), and returns the placed pods (for topology /
-// affinity analysis).
-func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagnose.NodeView, []diagnose.PlacedPod, error) {
+// affinity analysis) plus the GPU enablement-chain status (for GPU diagnoses).
+func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagnose.NodeView, []diagnose.PlacedPod, diagnose.ChainStatus, error) {
 	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, diagnose.ChainStatus{}, err
 	}
 	allPods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, diagnose.ChainStatus{}, err
 	}
+	chain := diagnose.AnalyzeOperatorChain(allPods.Items)
 	used := map[string]diagnose.Resources{}
 	var placed []diagnose.PlacedPod
 	for i := range allPods.Items {
@@ -252,7 +254,7 @@ func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagno
 		n := &nodes.Items[i]
 		views = append(views, diagnose.NodeView{Node: n, Used: used[n.Name]})
 	}
-	return views, placed, nil
+	return views, placed, chain, nil
 }
 
 func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) string {

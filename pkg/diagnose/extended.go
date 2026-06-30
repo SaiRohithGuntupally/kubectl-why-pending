@@ -12,7 +12,7 @@ import (
 // schedulable node advertises the resource at all (device plugin missing, no
 // such hardware, or those nodes were filtered out), or no single node has enough
 // of it free. Like CPU/memory, an extended request must be satisfied on ONE node.
-func AnalyzeExtendedResources(pod *corev1.Pod, eligible []NodeView) []Cause {
+func AnalyzeExtendedResources(pod *corev1.Pod, eligible []NodeView, chain *ChainStatus) []Cause {
 	req := PodRequests(pod).Extended
 
 	names := make([]string, 0, len(req))
@@ -45,14 +45,7 @@ func AnalyzeExtendedResources(pod *corev1.Pod, eligible []NodeView) []Cause {
 
 		switch {
 		case advertisers == 0:
-			causes = append(causes, Cause{
-				Severity: Blocker,
-				Title:    fmt.Sprintf("No eligible node provides %s", name),
-				Detail: fmt.Sprintf(
-					"The pod requests %d of %q, but no schedulable node advertises it. Common on-prem causes: the device plugin (e.g. the NVIDIA device plugin for nvidia.com/gpu) isn't installed or healthy, there's no node with that hardware, or the only nodes that have it were filtered out by a taint/selector/affinity — check the other findings.",
-					need, name),
-				Fix: fmt.Sprintf("Install/repair the device-plugin DaemonSet, add a node that advertises %s, or (if those nodes are tainted, as GPU nodes usually are) add the matching toleration.", name),
-			})
+			causes = append(causes, extendedNotAdvertised(name, need, chain))
 		case need > maxFree:
 			detail := fmt.Sprintf("Pod requests %d of %q. The most any single eligible node has free is %d", need, name, maxFree)
 			if need <= sumFree {

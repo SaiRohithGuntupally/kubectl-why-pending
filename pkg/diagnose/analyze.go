@@ -74,10 +74,11 @@ type NodeVerdict struct {
 type Input struct {
 	Pod            *corev1.Pod
 	Nodes          []NodeView
-	ClusterPods    []PlacedPod // all placed pods, for topology/affinity analysis
-	SchedulerEvent string      // latest FailedScheduling message, if any
-	UnboundPVCs    []string    // referenced PVCs that exist but are not Bound
-	MissingPVCs    []string    // referenced PVCs that don't exist at all
+	ClusterPods    []PlacedPod  // all placed pods, for topology/affinity analysis
+	SchedulerEvent string       // latest FailedScheduling message, if any
+	UnboundPVCs    []string     // referenced PVCs that exist but are not Bound
+	MissingPVCs    []string     // referenced PVCs that don't exist at all
+	Chain          *ChainStatus // GPU enablement-chain status (nil if not analyzed)
 }
 
 // Result is the diagnosis for one pod.
@@ -316,7 +317,7 @@ func Analyze(in Input) Result {
 	}
 
 	// Extended resources (GPUs, hugepages, custom device-plugin resources).
-	res.Causes = append(res.Causes, AnalyzeExtendedResources(in.Pod, eligibleViews)...)
+	res.Causes = append(res.Causes, AnalyzeExtendedResources(in.Pod, eligibleViews, in.Chain)...)
 
 	// Cross-pod constraints: topology spread and inter-pod (anti-)affinity.
 	allNodes := make([]*corev1.Node, 0, len(in.Nodes))
