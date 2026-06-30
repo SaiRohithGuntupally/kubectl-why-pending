@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / usage help
+    url: https://github.com/SaiRohithGuntupally/kubectl-why-pending/discussions
+    about: For questions and general discussion, open a Discussion instead of an issue.

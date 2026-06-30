@@ -1,0 +1,50 @@
+name: "Misdiagnosis / wrong or missing reason"
+description: "why-pending got your cluster wrong, or didn't explain a Pending pod. This is the most useful report I can get."
+title: "[misdiagnosis] <short summary>"
+labels: ["misdiagnosis"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping teach the tool a real-world case. The two things that
+        make a report actionable are the **pod spec** and the **node shape** —
+        with those I can usually reproduce it against a fake cluster and add a test.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `kubectl why-pending --version` (or the krew version)."
+      placeholder: "v0.5.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What it said vs. what was actually wrong
+      description: "Paste the `kubectl why-pending <pod>` output, then describe the real cause."
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: pod-spec
+    attributes:
+      label: Pod spec (the relevant bits)
+      description: "requests/limits, nodeSelector/affinity, tolerations, topologySpread, resourceClaims — redact anything sensitive."
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: node-shape
+    attributes:
+      label: Node shape
+      description: "Roughly: how many nodes, their allocatable CPU/mem/GPU, taints, labels. `kubectl get nodes -o wide` + relevant `describe node` excerpts are perfect."
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: "GPU stack (NVIDIA operator / device plugin / DRA driver), k8s version, etc."
+    validations:
+      required: false
