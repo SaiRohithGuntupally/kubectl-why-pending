@@ -66,14 +66,25 @@ infuriating when it blocks. The plugin computes the real skew across *all* domai
 (including the under-filled zone with no schedulable node — the one the spread is
 trying to balance into) and tells you which domain needs a node.
 
+**GPUs, the device-plugin chain, and DRA.** A pod asks for `nvidia.com/gpu: 1` and
+hangs — is there no GPU node, is the device plugin down, or are the GPU nodes
+tainted? When no node advertises the resource, the tool walks the GPU enablement
+chain (NFD → driver → container-toolkit → device-plugin → GFD → DCGM → MIG-manager)
+and names the **exact broken link** from pod status, instead of handing you a
+generic checklist. It also understands **Dynamic Resource Allocation (DRA, k8s
+1.34+)**: for pods using `resourceClaims` it reports unallocated or missing claims,
+missing DeviceClasses, and whether any DRA driver is actually publishing
+ResourceSlices.
+
 ## How it works
 
 The design goal was: **be correct enough to trust, and testable without a live
 cluster.** So the CLI does the Kubernetes-y part — gather nodes, pods-per-node
 requests, the pod's scheduling events, its PVCs — and hands a plain data struct to
 a pure analysis engine. The engine re-implements the scheduler's filter
-predicates (taints/tolerations, nodeSelector, node affinity, resource fit,
-topology spread, inter-pod affinity) and ranks the findings by severity.
+predicates (taints/tolerations, nodeSelector, node affinity, resource fit
+including GPUs/extended resources and DRA claims, topology spread, inter-pod
+affinity) and ranks the findings by severity.
 
 Because the engine takes no Kubernetes client, the whole thing is unit-tested
 against hand-built clusters — fragmentation, control-plane taints, skew math,
@@ -82,7 +93,7 @@ against a fake API. No kind cluster required in CI.
 
 It's deliberately honest about its limits: when static analysis finds no hard
 blocker, it says so and points you at the dynamic causes it doesn't model
-(priority/preemption, extended resources like GPUs) plus the raw scheduler event.
+(priority/preemption) plus the raw scheduler event.
 
 ## Try it
 
@@ -110,7 +121,8 @@ yet are exactly what I want to teach it next.
 > Tired of `kubectl describe`-ing Pending pods and getting "insufficient cpu"
 > when the real problem is resource fragmentation (capacity exists, just not on
 > one node), a control-plane taint eating half your small cluster, anti-affinity
-> running out of hosts, or topology-spread skew?
+> running out of hosts, topology-spread skew, a broken link in your GPU
+> device-plugin chain, or an unsatisfiable DRA claim (k8s 1.34+)?
 >
 > `kubectl why-pending` re-runs the scheduler's filtering locally and tells you
 > the cause in plain English, with the fix. Especially aimed at bare-metal/on-prem

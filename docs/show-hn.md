@@ -25,6 +25,14 @@ not on one node), control-plane taints eating a small cluster, GPU/extended-
 resource shortfalls, topology-spread skew, anti-affinity running out of hosts,
 unbound PVCs, and so on.
 
+Two newer bits I'm happy with, both aimed at GPU clusters: when no node advertises
+a GPU resource, it walks the enablement chain (NFD → driver → container-toolkit →
+device-plugin → GFD → DCGM → MIG-manager) and names the broken link from pod
+status, rather than handing you a generic checklist. And it diagnoses Dynamic
+Resource Allocation (DRA, k8s 1.34+) `resourceClaims` — unallocated/missing claims,
+missing DeviceClasses, whether a DRA driver is publishing ResourceSlices — which
+almost nothing else explains yet.
+
 It also does `-o json`, which turned out to be a 2017 Kubernetes feature request
 (#53908, a "WhyPending" annotation) that was closed without ever shipping —
 machine-readable scheduling reasons for CI gates and dashboards. The JSON

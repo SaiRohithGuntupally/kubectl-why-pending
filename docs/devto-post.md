@@ -57,11 +57,17 @@ are control-plane, your workload has exactly one home — and when it's full, th
 events say "insufficient cpu" while the real story is "you tainted away most of
 your cluster."
 
-**GPUs and extended resources.** A pod asks for `nvidia.com/gpu: 1` and hangs.
-Is it because no node has a GPU, the NVIDIA device plugin isn't running, or the
-GPU nodes are tainted and your pod lacks the toleration? The plugin tells you
-which — including the brutal one: *no schedulable node advertises the resource at
-all.*
+**GPUs, the device-plugin chain, and DRA.** A pod asks for `nvidia.com/gpu: 1`
+and hangs. Is it because no node has a GPU, the NVIDIA device plugin isn't running,
+or the GPU nodes are tainted and your pod lacks the toleration? The plugin tells
+you which — and when *no* schedulable node advertises the resource, it walks the
+GPU enablement chain (NFD → driver → container-toolkit → device-plugin → GFD →
+DCGM → MIG-manager) and names the **exact broken link** from pod status, instead
+of dumping a generic "check your GPU stack" checklist on you. It also handles
+**Dynamic Resource Allocation (DRA, k8s 1.34+)**: for pods using `resourceClaims`
+it reports unallocated/missing claims, missing DeviceClasses, and whether any DRA
+driver is actually publishing ResourceSlices — the bleeding-edge GPU-sharing path
+that almost no tooling explains yet.
 
 **Anti-affinity out of hosts.** The classic "one replica per node"
 `podAntiAffinity` — lovely until you want more replicas than you have nodes.
@@ -79,12 +85,14 @@ The CLI does the Kubernetes-y part — gather nodes, pods-per-node requests, the
 pod's scheduling events, its PVCs — and hands a plain data struct to a pure
 analysis engine. The engine re-implements the scheduler's filter predicates
 (taints/tolerations, nodeSelector, node affinity, resource fit including extended
-resources, topology spread, inter-pod affinity) and ranks the findings.
+resources, the GPU enablement chain, DRA claims, topology spread, inter-pod
+affinity) and ranks the findings.
 
 Because the engine takes **no Kubernetes client**, the whole thing is unit-tested
 against hand-built clusters — fragmentation, control-plane taints, GPU
-exhaustion, skew math, anti-affinity — plus an end-to-end test that drives the
-full pipeline against a fake API. No kind cluster in CI.
+exhaustion, the operator-chain and DRA cases, skew math, anti-affinity — plus an
+end-to-end test that drives the full pipeline against a fake API. No kind cluster
+in CI.
 
 It's deliberately honest about its limits: when it finds no hard blocker, it says
 so and points at the dynamic causes it doesn't model (priority/preemption) plus

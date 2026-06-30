@@ -42,6 +42,8 @@ out the stuff the events gloss over:
 - Resource fragmentation — you have the CPU, just not on one node
 - Control-plane taints eating a small cluster
 - GPU / extended resources — no node provides it (device plugin missing?), or none free
+- GPU enablement chain — names the broken link (NFD → driver → device-plugin → GFD → DCGM → MIG-manager) from pod status
+- DRA (Dynamic Resource Allocation, k8s 1.34+) — unallocated/missing claims, missing DeviceClasses, no driver publishing ResourceSlices
 - Topology-spread skew, anti-affinity running out of hosts
 - Unbound PVCs, cordoned/NotReady nodes, nodeSelector/affinity mismatches
 
@@ -109,15 +111,20 @@ scheduler's filtering locally and explains, per node: resource fragmentation,
 control-plane taints, GPU/extended-resource shortfalls, topology-spread skew,
 anti-affinity, unbound PVCs.
 
-3/ It also does `-o json` with a per-node breakdown — which was a 2017 k8s
+3/ For GPU clusters: when no node advertises the GPU, it walks the enablement
+chain (NFD → driver → device-plugin → GFD → DCGM → MIG-manager) and names the
+broken link. It also diagnoses DRA (k8s 1.34+) resourceClaims — claims,
+DeviceClasses, ResourceSlices — which almost nothing else explains yet.
+
+4/ It also does `-o json` with a per-node breakdown — which was a 2017 k8s
 feature request (#53908 "WhyPending") that got closed without shipping. Great for
 CI gates + dashboards.
 
-4/ The design I like: the analysis engine takes plain structs, no k8s client — so
+5/ The design I like: the analysis engine takes plain structs, no k8s client — so
 the scheduler logic is unit-tested against fake clusters, no kind/minikube.
 Releases are fully automated on `git tag`.
 
-5/ MIT, feedback very welcome — especially "it misdiagnosed my cluster" reports.
+6/ MIT, feedback very welcome — especially "it misdiagnosed my cluster" reports.
 #kubernetes #golang
 ```
 
@@ -135,7 +142,9 @@ If you run Kubernetes on bare metal, you know the pain: a pod stuck "Pending"
 with a vague FailedScheduling event that never tells you what to actually fix.
 This tool re-runs the scheduler's logic locally and explains, in plain English,
 why the pod won't schedule — resource fragmentation, control-plane taints, GPU
-shortfalls, topology spread, and more — plus the exact fix.
+shortfalls, topology spread, and more — plus the exact fix. For GPU clusters it
+even pinpoints the broken link in the NVIDIA enablement chain and diagnoses the
+new Dynamic Resource Allocation (DRA) claims in Kubernetes 1.34.
 
 It even adds machine-readable output (-o json), something Kubernetes itself had
 as a feature request back in 2017 and never shipped.
