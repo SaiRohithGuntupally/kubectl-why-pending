@@ -67,6 +67,12 @@ the result like a teammate would.
 - **Extended resources** (`nvidia.com/gpu`, hugepages, custom device-plugin
   resources) — no node advertises it (device plugin missing / no such hardware),
   or none has enough free.
+- **GPU enablement chain** — when a GPU resource isn't advertised, names the
+  exact broken link (NFD → driver → container-toolkit → device-plugin → GFD →
+  DCGM → MIG-manager) from pod status, instead of a generic checklist.
+- **Dynamic Resource Allocation (DRA, k8s 1.34+)** — for pods using
+  `resourceClaims`: unallocated or missing claims, missing DeviceClasses, and
+  whether any DRA driver is publishing ResourceSlices.
 - **Pod topology spread** (`DoNotSchedule`) — computes the real skew across all
   domains and tells you which under-filled zone/host needs a node.
 - **Inter-pod affinity / anti-affinity** (required) — including the classic

@@ -13,11 +13,13 @@ spec:
     It calls out the causes bare-metal / on-prem clusters hit that cloud clusters
     hide behind the autoscaler: resource fragmentation (capacity exists, but not
     on any single node), control-plane taints eating a small cluster, GPU /
-    extended resources (no node provides it, or none has enough free), topology
-    spread skew, anti-affinity running out of hosts, a pod larger than any node,
-    nodeSelector / nodeAffinity mismatches, cordoned / NotReady nodes, and unbound
-    PersistentVolumeClaims. When no static blocker is found it points at the
-    dynamic causes it doesn't model and shows the raw scheduler event.
+    extended resources (no node provides it — naming the broken GPU device-plugin
+    / operator-chain link — or none has enough free), Dynamic Resource Allocation
+    (DRA) claims that can't be satisfied, topology spread skew, anti-affinity
+    running out of hosts, a pod larger than any node, nodeSelector / nodeAffinity
+    mismatches, cordoned / NotReady nodes, and unbound PersistentVolumeClaims.
+    When no static blocker is found it points at the dynamic causes it doesn't
+    model and shows the raw scheduler event.
 
     Usage:
       kubectl why-pending                 # every Pending pod in the namespace
