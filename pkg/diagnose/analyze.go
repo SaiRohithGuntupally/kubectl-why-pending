@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 )
 
 // Severity ranks how strongly a cause blocks scheduling.
@@ -79,6 +80,13 @@ type Input struct {
 	UnboundPVCs    []string     // referenced PVCs that exist but are not Bound
 	MissingPVCs    []string     // referenced PVCs that don't exist at all
 	Chain          *ChainStatus // GPU enablement-chain status (nil if not analyzed)
+
+	// DRA (Dynamic Resource Allocation, k8s 1.34+) inputs, populated only when a
+	// pending pod uses pod.spec.resourceClaims. Claims may span namespaces;
+	// slices and classes are cluster-scoped.
+	DRAClaims  []resourcev1.ResourceClaim
+	DRASlices  []resourcev1.ResourceSlice
+	DRAClasses []resourcev1.DeviceClass
 }
 
 // Result is the diagnosis for one pod.
@@ -330,6 +338,12 @@ func Analyze(in Input) Result {
 	}
 	res.Causes = append(res.Causes, AnalyzeTopologySpread(in.Pod, allNodes, eligibleNodes, in.ClusterPods)...)
 	res.Causes = append(res.Causes, AnalyzePodAffinity(in.Pod, eligibleNodes, in.ClusterPods)...)
+
+	// Dynamic Resource Allocation: pods requesting devices via resourceClaims are
+	// invisible to the extended-resource path, so diagnose them separately.
+	if UsesDRA(in.Pod) {
+		res.Causes = append(res.Causes, AnalyzeDRA(in.Pod, in.DRAClaims, in.DRASlices, in.DRAClasses)...)
+	}
 
 	// Honest about the limits of a static analysis. Whenever no specific cause
 	// was found, say so explicitly rather than emitting an empty diagnosis —

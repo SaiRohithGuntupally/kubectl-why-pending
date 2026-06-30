@@ -11,6 +11,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -111,6 +112,7 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	draClaims, draSlices, draClasses := gatherDRA(ctx, client, pending)
 
 	results := make([]diagnose.Result, 0, len(pending))
 	for i := range pending {
@@ -124,6 +126,9 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 			MissingPVCs:    missing,
 			UnboundPVCs:    unbound,
 			Chain:          &chain,
+			DRAClaims:      draClaims,
+			DRASlices:      draSlices,
+			DRAClasses:     draClasses,
 		}
 		results = append(results, diagnose.Analyze(in))
 	}
@@ -255,6 +260,37 @@ func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagno
 		views = append(views, diagnose.NodeView{Node: n, Used: used[n.Name]})
 	}
 	return views, placed, chain, nil
+}
+
+// gatherDRA fetches the Dynamic Resource Allocation objects needed to diagnose
+// pods that request devices via resourceClaims. It only hits the resource.k8s.io
+// API when at least one pending pod uses DRA, and tolerates the API being absent
+// (pre-1.34 clusters) or unreadable by returning whatever it could fetch.
+func gatherDRA(ctx context.Context, client kubernetes.Interface, pending []corev1.Pod) ([]resourcev1.ResourceClaim, []resourcev1.ResourceSlice, []resourcev1.DeviceClass) {
+	needed := false
+	for i := range pending {
+		if diagnose.UsesDRA(&pending[i]) {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil, nil, nil
+	}
+
+	var claims []resourcev1.ResourceClaim
+	var slices []resourcev1.ResourceSlice
+	var classes []resourcev1.DeviceClass
+	if cl, err := client.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{}); err == nil {
+		claims = cl.Items
+	}
+	if sl, err := client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{}); err == nil {
+		slices = sl.Items
+	}
+	if cc, err := client.ResourceV1().DeviceClasses().List(ctx, metav1.ListOptions{}); err == nil {
+		classes = cc.Items
+	}
+	return claims, slices, classes
 }
 
 func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) string {
