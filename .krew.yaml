@@ -10,19 +10,27 @@ spec:
     why-pending re-runs the scheduler's filtering logic locally and explains, in
     plain English, why a pod cannot be scheduled — and what to change.
 
-    It focuses on the scheduling and resource constraints that bare-metal /
-    on-prem clusters hit but cloud clusters hide behind the autoscaler. When it
-    finds no static blocker, it surfaces the scheduler's own event and points at
-    the likely dynamic cause.
+    It calls out the causes bare-metal / on-prem clusters hit that cloud clusters
+    hide behind the autoscaler: resource fragmentation (capacity exists, but not
+    on any single node), control-plane taints eating a small cluster, GPU /
+    extended resources (no node provides it — naming the broken GPU device-plugin
+    / operator-chain link — or none has enough free), Dynamic Resource Allocation
+    (DRA) claims that can't be satisfied, topology spread skew, anti-affinity
+    running out of hosts, a pod larger than any node, nodeSelector / nodeAffinity
+    mismatches, cordoned / NotReady nodes, and unbound PersistentVolumeClaims.
+    When no static blocker is found it points at the dynamic causes it doesn't
+    model and shows the raw scheduler event.
 
     Usage:
       kubectl why-pending                 # every Pending pod in the namespace
       kubectl why-pending my-pod -n data  # a specific pod
       kubectl why-pending -A              # all namespaces
   caveats: |
-    Best-effort static analysis: it re-implements the common scheduler predicates,
-    not the full scheduler (e.g. no priority/preemption and some dynamic behavior).
-    It only reads cluster state and makes no changes.
+    Best-effort static analysis. It models the common scheduler predicates —
+    including extended resources (GPUs, hugepages, device-plugin resources) and
+    topology spread — but not priority/preemption or the topology-spread
+    minDomains/nodeAffinityPolicy refinements. It reads cluster state (nodes, pods,
+    events, PVCs) and makes no changes.
   platforms:
   - selector:
       matchLabels:
