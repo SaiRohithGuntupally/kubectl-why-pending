@@ -14,8 +14,10 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/pager"
 
 	"github.com/sairohithg/kubectl-why-pending/pkg/diagnose"
 )
@@ -214,28 +216,66 @@ func pendingPods(ctx context.Context, client kubernetes.Interface, opts options)
 	return out, nil
 }
 
+// podListPageSize bounds how many pods are held in memory at once while
+// streaming the cluster-wide pod list.
+const podListPageSize = 500
+
 // gatherNodeViews lists nodes and sums the requests of pods already placed on
 // each (for free-capacity math), and returns the placed pods (for topology /
 // affinity analysis) plus the GPU enablement-chain status (for GPU diagnoses).
+//
+// The cluster-wide pod list is served from the apiserver watch cache
+// (ResourceVersion "0") and streamed in bounded pages, so the full set of pod
+// specs is never materialized at once — memory scales with page size, not total
+// pod count.
 func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagnose.NodeView, []diagnose.PlacedPod, diagnose.ChainStatus, error) {
-	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return nil, nil, diagnose.ChainStatus{}, err
 	}
-	allPods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+
+	listPods := func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
+		return client.CoreV1().Pods("").List(ctx, opts)
+	}
+	used, placed, chainPods, err := streamPods(ctx, listPods)
 	if err != nil {
 		return nil, nil, diagnose.ChainStatus{}, err
 	}
-	chain := diagnose.AnalyzeOperatorChain(allPods.Items)
+	chain := diagnose.AnalyzeOperatorChain(chainPods)
+
+	views := make([]diagnose.NodeView, 0, len(nodes.Items))
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		views = append(views, diagnose.NodeView{Node: n, Used: used[n.Name]})
+	}
+	return views, placed, chain, nil
+}
+
+// streamPods pages through every pod via listFn (served from the watch cache)
+// and folds each one incrementally into the per-node request totals (used), the
+// placed-pod summaries (placed), and the GPU operator-relevant subset
+// (chainPods). No page beyond podListPageSize is held at once, and only the
+// compact per-pod summaries — not full pod specs — are retained across pages.
+func streamPods(ctx context.Context, listFn pager.ListPageFunc) (map[string]diagnose.Resources, []diagnose.PlacedPod, []corev1.Pod, error) {
 	used := map[string]diagnose.Resources{}
 	var placed []diagnose.PlacedPod
-	for i := range allPods.Items {
-		p := &allPods.Items[i]
+	var chainPods []corev1.Pod
+
+	pgr := pager.New(listFn)
+	pgr.PageSize = podListPageSize
+	err := pgr.EachListItem(ctx, metav1.ListOptions{ResourceVersion: "0"}, func(obj runtime.Object) error {
+		p, ok := obj.(*corev1.Pod)
+		if !ok {
+			return nil
+		}
+		if diagnose.ChainRelevant(p) {
+			chainPods = append(chainPods, *p)
+		}
 		if p.Spec.NodeName == "" {
-			continue
+			return nil
 		}
 		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
-			continue
+			return nil
 		}
 		r := diagnose.PodRequests(p)
 		cur := used[p.Spec.NodeName]
@@ -253,13 +293,9 @@ func gatherNodeViews(ctx context.Context, client kubernetes.Interface) ([]diagno
 			NodeName:  p.Spec.NodeName,
 			Labels:    p.Labels,
 		})
-	}
-	views := make([]diagnose.NodeView, 0, len(nodes.Items))
-	for i := range nodes.Items {
-		n := &nodes.Items[i]
-		views = append(views, diagnose.NodeView{Node: n, Used: used[n.Name]})
-	}
-	return views, placed, chain, nil
+		return nil
+	})
+	return used, placed, chainPods, err
 }
 
 // gatherDRA fetches the Dynamic Resource Allocation objects needed to diagnose

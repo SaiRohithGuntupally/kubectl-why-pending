@@ -94,6 +94,23 @@ func matchChainPods(pods []corev1.Pod, patterns []string) []corev1.Pod {
 	return out
 }
 
+// ChainRelevant reports whether a pod belongs to any GPU enablement-chain
+// component. Streaming callers use it to collect only the operator-relevant pods
+// for AnalyzeOperatorChain, so the full cluster pod set never needs
+// materializing. Passing exactly the ChainRelevant pods to AnalyzeOperatorChain
+// yields an identical result, since matchChainPods filters on the same patterns.
+func ChainRelevant(pod *corev1.Pod) bool {
+	name := strings.ToLower(pod.Name)
+	for _, step := range gpuChain {
+		for _, pat := range step.Patterns {
+			if strings.Contains(name, pat) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func chainPodHealth(p *corev1.Pod) (bool, string) {
 	switch p.Status.Phase {
 	case corev1.PodSucceeded:
