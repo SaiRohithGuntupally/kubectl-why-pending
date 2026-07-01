@@ -186,6 +186,60 @@ have "already on krew + written up on dev.to + used by N people" as credibility.
 
 ---
 
+## 9. r/golang (the engineering-craft angle — post on a weekend)
+
+**How:** r/golang welcomes "show your project" posts, especially Sat–Sun. Lead with
+the *Go design*, not the Kubernetes pain — this audience wants the architecture and
+testing story. Disclose you're the author. Flair: "Show & Tell" if offered.
+
+**Title:**
+> Show & Tell: a kubectl plugin whose scheduler engine is fully unit-tested with no cluster and no k8s client
+
+**Body:**
+```
+I wrote kubectl-why-pending, a CLI that explains why a Kubernetes pod is stuck
+Pending. Sharing it here for the design, not the k8s domain — the part I'm happy
+with is the Go architecture, and I'd like critique on it.
+
+The core problem with tools in this space is they're painful to test: anything
+touching a cluster wants a live API, so tests reach for kind/minikube/envtest and
+turn slow and flaky. I wanted the scheduling logic to be pure and fast to test.
+
+The split:
+
+- A `pkg/diagnose` engine that takes plain structs (nodes, pod requests, events)
+  and returns a ranked list of causes. It re-implements the scheduler's filter
+  predicates — taints/tolerations, nodeSelector, node affinity, resource fit
+  (incl. GPUs/extended resources and DRA claims), topology spread, inter-pod
+  (anti-)affinity. It imports NO Kubernetes client. Pure in, pure out.
+- A thin CLI layer that does the only I/O-bound part — gather cluster state once —
+  and hands those structs to the engine.
+
+Because the engine has zero client dependency, every scheduling scenario is a
+table test against hand-built clusters: fragmentation math, topology skew, GPU
+exhaustion, anti-affinity running out of hosts. No cluster in CI. There's also one
+end-to-end test that drives the whole pipeline against a fake API.
+
+Other bits Gophers might care about:
+- `-o json`/`-o yaml` structured output with a per-node breakdown, and exit codes
+  (0/1/2/3) so it composes in scripts: `kubectl why-pending -A -o json || alert`.
+- Releases fully automated on `git tag` (GoReleaser-style), MIT-licensed.
+
+Repo: https://github.com/SaiRohithGuntupally/kubectl-why-pending
+
+Questions I'd genuinely like opinions on: is the pure-struct engine boundary worth
+the mapping code at the CLI edge (I think yes), and how others keep k8s-touching
+Go code testable without dragging in envtest. Critique welcome.
+```
+
+**Notes:**
+- The hook is *testability without a cluster* — that's a real, relatable Go pain,
+  not marketing. It invites a design discussion, which is what carries r/golang posts.
+- Don't dwell on Kubernetes features; mention GPU/DRA in one line and move on.
+- Reply to design critique substantively — that thread is the point.
+
+---
+
 ## Measuring what works
 
 krew doesn't expose install counts directly, but you can track:
