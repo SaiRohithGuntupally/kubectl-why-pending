@@ -73,6 +73,11 @@ the result like a teammate would.
 - **Dynamic Resource Allocation (DRA, k8s 1.34+)** — for pods using
   `resourceClaims`: unallocated or missing claims, missing DeviceClasses, and
   whether any DRA driver is publishing ResourceSlices.
+- **Device taints (k8s 1.37+)** — when devices *are* published but every one
+  carries a `NoSchedule`/`NoExecute` device taint the claim doesn't tolerate,
+  names the taint and where it came from (the driver's ResourceSlice or a
+  `DeviceTaintRule`), kept separate from ordinary node taints. Partial cases
+  say how many devices were really candidates.
 - **Pod topology spread** (`DoNotSchedule`) — computes the real skew across all
   domains and tells you which under-filled zone/host needs a node.
 - **Inter-pod affinity / anti-affinity** (required) — including the classic

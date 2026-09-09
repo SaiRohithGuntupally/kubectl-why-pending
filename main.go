@@ -114,7 +114,7 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	draClaims, draSlices, draClasses := gatherDRA(ctx, client, pending)
+	draClaims, draSlices, draClasses, draTaintRules := gatherDRA(ctx, client, pending)
 
 	results := make([]diagnose.Result, 0, len(pending))
 	for i := range pending {
@@ -131,6 +131,7 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 			DRAClaims:      draClaims,
 			DRASlices:      draSlices,
 			DRAClasses:     draClasses,
+			DRATaintRules:  draTaintRules,
 		}
 		results = append(results, diagnose.Analyze(in))
 	}
@@ -302,7 +303,7 @@ func streamPods(ctx context.Context, listFn pager.ListPageFunc) (map[string]diag
 // pods that request devices via resourceClaims. It only hits the resource.k8s.io
 // API when at least one pending pod uses DRA, and tolerates the API being absent
 // (pre-1.34 clusters) or unreadable by returning whatever it could fetch.
-func gatherDRA(ctx context.Context, client kubernetes.Interface, pending []corev1.Pod) ([]resourcev1.ResourceClaim, []resourcev1.ResourceSlice, []resourcev1.DeviceClass) {
+func gatherDRA(ctx context.Context, client kubernetes.Interface, pending []corev1.Pod) ([]resourcev1.ResourceClaim, []resourcev1.ResourceSlice, []resourcev1.DeviceClass, []resourcev1.DeviceTaintRule) {
 	needed := false
 	for i := range pending {
 		if diagnose.UsesDRA(&pending[i]) {
@@ -311,7 +312,7 @@ func gatherDRA(ctx context.Context, client kubernetes.Interface, pending []corev
 		}
 	}
 	if !needed {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	var claims []resourcev1.ResourceClaim
@@ -326,7 +327,37 @@ func gatherDRA(ctx context.Context, client kubernetes.Interface, pending []corev
 	if cc, err := client.ResourceV1().DeviceClasses().List(ctx, metav1.ListOptions{}); err == nil {
 		classes = cc.Items
 	}
-	return claims, slices, classes
+	return claims, slices, classes, gatherDeviceTaintRules(ctx, client)
+}
+
+// gatherDeviceTaintRules lists DeviceTaintRules (KEP-5055). They are served from
+// resource.k8s.io/v1 since 1.37 (GA); 1.36 clusters with the DRADeviceTaints
+// gate on only have v1beta2, so fall back to that and convert. Anything older
+// has no such resource at all, which yields nil.
+func gatherDeviceTaintRules(ctx context.Context, client kubernetes.Interface) []resourcev1.DeviceTaintRule {
+	if rl, err := client.ResourceV1().DeviceTaintRules().List(ctx, metav1.ListOptions{}); err == nil {
+		return rl.Items
+	}
+	rl, err := client.ResourceV1beta2().DeviceTaintRules().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+	rules := make([]resourcev1.DeviceTaintRule, 0, len(rl.Items))
+	for i := range rl.Items {
+		r := &rl.Items[i]
+		out := resourcev1.DeviceTaintRule{ObjectMeta: r.ObjectMeta}
+		if s := r.Spec.DeviceSelector; s != nil {
+			out.Spec.DeviceSelector = &resourcev1.DeviceTaintSelector{Driver: s.Driver, Pool: s.Pool, Device: s.Device}
+		}
+		out.Spec.Taint = resourcev1.DeviceTaint{
+			Key:       r.Spec.Taint.Key,
+			Value:     r.Spec.Taint.Value,
+			Effect:    resourcev1.DeviceTaintEffect(r.Spec.Taint.Effect),
+			TimeAdded: r.Spec.Taint.TimeAdded,
+		}
+		rules = append(rules, out)
+	}
+	return rules
 }
 
 func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) string {

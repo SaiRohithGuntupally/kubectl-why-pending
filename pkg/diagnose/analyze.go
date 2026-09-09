@@ -87,6 +87,9 @@ type Input struct {
 	DRAClaims  []resourcev1.ResourceClaim
 	DRASlices  []resourcev1.ResourceSlice
 	DRAClasses []resourcev1.DeviceClass
+	// DeviceTaintRules (k8s 1.37+) taint devices cluster-wide; nil when the
+	// cluster doesn't serve DeviceTaintRule at all.
+	DRATaintRules []resourcev1.DeviceTaintRule
 }
 
 // Result is the diagnosis for one pod.
@@ -342,7 +345,7 @@ func Analyze(in Input) Result {
 	// Dynamic Resource Allocation: pods requesting devices via resourceClaims are
 	// invisible to the extended-resource path, so diagnose them separately.
 	if UsesDRA(in.Pod) {
-		res.Causes = append(res.Causes, AnalyzeDRA(in.Pod, in.DRAClaims, in.DRASlices, in.DRAClasses)...)
+		res.Causes = append(res.Causes, AnalyzeDRA(in.Pod, in.DRAClaims, in.DRASlices, in.DRAClasses, in.DRATaintRules)...)
 	}
 
 	// Honest about the limits of a static analysis. Whenever no specific cause

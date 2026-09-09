@@ -69,7 +69,7 @@ func TestUsesDRA(t *testing.T) {
 func TestAnalyzeDRA_Unallocated(t *testing.T) {
 	pod := draPod("train", "ml", "gpu", "claim-1")
 	claims := []resourcev1.ResourceClaim{draClaim("ml", "claim-1", "gpu.example.com", false)}
-	c := AnalyzeDRA(pod, claims, nil, nil)
+	c := AnalyzeDRA(pod, claims, nil, nil, nil)
 	if !strings.Contains(causeText(c), "is not allocated") {
 		t.Fatalf("want unallocated cause, got:\n%s", causeText(c))
 	}
@@ -78,14 +78,14 @@ func TestAnalyzeDRA_Unallocated(t *testing.T) {
 func TestAnalyzeDRA_Allocated_NoCause(t *testing.T) {
 	pod := draPod("train", "ml", "gpu", "claim-1")
 	claims := []resourcev1.ResourceClaim{draClaim("ml", "claim-1", "gpu.example.com", true)}
-	if c := AnalyzeDRA(pod, claims, nil, nil); len(c) != 0 {
+	if c := AnalyzeDRA(pod, claims, nil, nil, nil); len(c) != 0 {
 		t.Fatalf("allocated claim should produce no cause, got:\n%s", causeText(c))
 	}
 }
 
 func TestAnalyzeDRA_ClaimNotFound(t *testing.T) {
 	pod := draPod("train", "ml", "gpu", "claim-1")
-	if c := AnalyzeDRA(pod, nil, nil, nil); !strings.Contains(causeText(c), "not found") {
+	if c := AnalyzeDRA(pod, nil, nil, nil, nil); !strings.Contains(causeText(c), "not found") {
 		t.Fatalf("want claim-not-found, got:\n%s", causeText(c))
 	}
 }
@@ -94,7 +94,7 @@ func TestAnalyzeDRA_NamespaceIsolation(t *testing.T) {
 	// A claim with the right name but in another namespace must not match.
 	pod := draPod("train", "ml", "gpu", "claim-1")
 	claims := []resourcev1.ResourceClaim{draClaim("other", "claim-1", "gpu.example.com", true)}
-	if c := AnalyzeDRA(pod, claims, nil, nil); !strings.Contains(causeText(c), "not found") {
+	if c := AnalyzeDRA(pod, claims, nil, nil, nil); !strings.Contains(causeText(c), "not found") {
 		t.Fatalf("claim in another namespace must not match, got:\n%s", causeText(c))
 	}
 }
@@ -103,7 +103,7 @@ func TestAnalyzeDRA_MissingDeviceClass(t *testing.T) {
 	pod := draPod("train", "ml", "gpu", "claim-1")
 	claims := []resourcev1.ResourceClaim{draClaim("ml", "claim-1", "gpu.example.com", false)}
 	classes := []resourcev1.DeviceClass{draClass("some.other.class")}
-	c := AnalyzeDRA(pod, claims, []resourcev1.ResourceSlice{}, classes)
+	c := AnalyzeDRA(pod, claims, []resourcev1.ResourceSlice{}, classes, nil)
 	if !strings.Contains(causeText(c), "not found in the cluster") {
 		t.Fatalf("want missing-DeviceClass detail, got:\n%s", causeText(c))
 	}
@@ -113,7 +113,7 @@ func TestAnalyzeDRA_NoDriverPublishing(t *testing.T) {
 	pod := draPod("train", "ml", "gpu", "claim-1")
 	claims := []resourcev1.ResourceClaim{draClaim("ml", "claim-1", "gpu.example.com", false)}
 	classes := []resourcev1.DeviceClass{draClass("gpu.example.com")}
-	c := AnalyzeDRA(pod, claims, []resourcev1.ResourceSlice{}, classes)
+	c := AnalyzeDRA(pod, claims, []resourcev1.ResourceSlice{}, classes, nil)
 	if !strings.Contains(causeText(c), "No ResourceSlices publish any devices") {
 		t.Fatalf("want no-driver detail, got:\n%s", causeText(c))
 	}
@@ -126,7 +126,7 @@ func TestAnalyzeDRA_TemplateNotMaterialized(t *testing.T) {
 			ResourceClaims: []corev1.PodResourceClaim{{Name: "gpu", ResourceClaimTemplateName: sptr("gpu-template")}},
 		},
 	}
-	if c := AnalyzeDRA(pod, nil, nil, nil); !strings.Contains(causeText(c), "not created yet") {
+	if c := AnalyzeDRA(pod, nil, nil, nil, nil); !strings.Contains(causeText(c), "not created yet") {
 		t.Fatalf("want template-not-materialized cause, got:\n%s", causeText(c))
 	}
 }

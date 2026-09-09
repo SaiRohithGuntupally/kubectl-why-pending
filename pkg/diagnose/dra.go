@@ -50,9 +50,10 @@ func requestedClasses(claim *resourcev1.ResourceClaim) []string {
 // AnalyzeDRA explains why a DRA pod's device claims aren't satisfied. It resolves
 // each pod claim to its ResourceClaim and reports: not-yet-created, missing,
 // unallocated (with concrete evidence from DeviceClasses/ResourceSlices), or
-// allocated (no cause). claims may span namespaces; slices/classes are cluster-
-// scoped. CEL device-selector matching is intentionally not performed here.
-func AnalyzeDRA(pod *corev1.Pod, claims []resourcev1.ResourceClaim, slices []resourcev1.ResourceSlice, classes []resourcev1.DeviceClass) []Cause {
+// allocated (no cause). claims may span namespaces; slices/classes/rules are
+// cluster-scoped. rules are DeviceTaintRules (k8s 1.37+); nil is fine on older
+// clusters. CEL device-selector matching is intentionally not performed here.
+func AnalyzeDRA(pod *corev1.Pod, claims []resourcev1.ResourceClaim, slices []resourcev1.ResourceSlice, classes []resourcev1.DeviceClass, rules []resourcev1.DeviceTaintRule) []Cause {
 	byKey := map[string]*resourcev1.ResourceClaim{}
 	for i := range claims {
 		byKey[claims[i].Namespace+"/"+claims[i].Name] = &claims[i]
@@ -83,15 +84,16 @@ func AnalyzeDRA(pod *corev1.Pod, claims []resourcev1.ResourceClaim, slices []res
 		if claim.Status.Allocation != nil {
 			continue // allocated — not the blocker
 		}
-		causes = append(causes, unallocatedClaimCause(name, claim, slices, classes))
+		causes = append(causes, unallocatedClaimCause(name, claim, slices, classes, rules))
 	}
 	return causes
 }
 
 // unallocatedClaimCause explains an unallocated claim with concrete evidence: a
 // referenced DeviceClass that doesn't exist, no DRA driver publishing devices,
-// or devices published but none allocatable.
-func unallocatedClaimCause(name string, claim *resourcev1.ResourceClaim, slices []resourcev1.ResourceSlice, classes []resourcev1.DeviceClass) Cause {
+// devices published but every one carries an untolerated device taint, or
+// devices published but none allocatable.
+func unallocatedClaimCause(name string, claim *resourcev1.ResourceClaim, slices []resourcev1.ResourceSlice, classes []resourcev1.DeviceClass, rules []resourcev1.DeviceTaintRule) Cause {
 	clsList := requestedClasses(claim)
 	classesStr := "(none)"
 	if len(clsList) > 0 {
@@ -127,6 +129,11 @@ func unallocatedClaimCause(name string, claim *resourcev1.ResourceClaim, slices 
 		if total == 0 {
 			detail += " No ResourceSlices publish any devices — the DRA driver for these classes isn't running or hasn't published its inventory."
 			fix = "Install/repair the DRA driver (e.g. the NVIDIA DRA driver) and confirm `kubectl get resourceslices` lists devices."
+		} else if td, tf, ok := deviceTaintDetail(analyzeDeviceTaints(claim, publishedDevices(slices, rules))); ok {
+			// Device taints (k8s 1.37+): name the exact taint and its source
+			// instead of the generic "none allocatable" guess.
+			detail += td
+			fix = tf
 		} else {
 			detail += fmt.Sprintf(" %d device(s) are published cluster-wide, but none could be allocated — likely all already in use, or none match the request's selectors.", total)
 			fix = "Free a matching device (scale down / delete claims holding them), add nodes with matching devices, or relax the request's selectors."
