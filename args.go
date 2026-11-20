@@ -23,6 +23,9 @@ func parseArgs(args []string) (options, error) {
 		case a == "-h" || a == "--help":
 			fmt.Print(usage)
 			os.Exit(0)
+		case a == "--version":
+			fmt.Println("kubectl-why-pending", version)
+			os.Exit(0)
 		case a == "-A" || a == "--all-namespaces":
 			o.allNamespaces = true
 		case a == "--no-color":

@@ -1,10 +1,12 @@
 BINARY := kubectl-why_pending
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
 INSTALL_DIR ?= $(HOME)/.local/bin
 
 .PHONY: build test vet demo install clean
 
 build:
-	go build -o $(BINARY) .
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
 test:
 	go test ./...
@@ -32,7 +34,7 @@ release:
 	  os=$${p%/*}; arch=$${p#*/}; stage="dist/stage_$${os}_$${arch}"; \
 	  mkdir -p "$$stage"; \
 	  echo "building $$os/$$arch"; \
-	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "-s -w" -o "$$stage/$(BINARY)" . ; \
+	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o "$$stage/$(BINARY)" . ; \
 	  cp LICENSE README.md "$$stage/"; \
 	  tar -C "$$stage" -czf "dist/kubectl-why-pending_$${os}_$${arch}.tar.gz" $(BINARY) LICENSE README.md; \
 	  rm -rf "$$stage"; [ -n "$$CLEAN_CACHE" ] && go clean -cache || true; \

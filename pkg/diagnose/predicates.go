@@ -159,3 +159,20 @@ func contains(values []string, v string) bool {
 	}
 	return false
 }
+
+// The scheduler removes NotReady and cordoned nodes through these taints, so a
+// pod that tolerates them (DaemonSet-style infra pods) can still land there.
+var (
+	notReadyTaint      = corev1.Taint{Key: corev1.TaintNodeNotReady, Effect: corev1.TaintEffectNoSchedule}
+	unschedulableTaint = corev1.Taint{Key: corev1.TaintNodeUnschedulable, Effect: corev1.TaintEffectNoSchedule}
+)
+
+// toleratesTaint reports whether any of the pod's tolerations covers taint.
+func toleratesTaint(pod *corev1.Pod, taint corev1.Taint) bool {
+	for i := range pod.Spec.Tolerations {
+		if tolerationTolerates(pod.Spec.Tolerations[i], taint) {
+			return true
+		}
+	}
+	return false
+}

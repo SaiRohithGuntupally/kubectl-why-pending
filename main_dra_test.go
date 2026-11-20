@@ -39,7 +39,7 @@ func TestGatherDRA_FetchesDeviceTaintRules(t *testing.T) {
 			},
 		},
 	)
-	claims, slices, _, rules := gatherDRA(context.Background(), client, []corev1.Pod{*draPendingPod()})
+	claims, slices, _, rules, _ := gatherDRA(context.Background(), client, []corev1.Pod{*draPendingPod()})
 	if len(claims) != 1 || len(slices) != 1 {
 		t.Fatalf("claims=%d slices=%d, want 1/1", len(claims), len(slices))
 	}
@@ -69,7 +69,7 @@ func TestGatherDRA_FallsBackToV1beta2DeviceTaintRules(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	_, _, _, rules := gatherDRA(context.Background(), client, []corev1.Pod{*draPendingPod()})
+	_, _, _, rules, _ := gatherDRA(context.Background(), client, []corev1.Pod{*draPendingPod()})
 	if len(rules) != 1 {
 		t.Fatalf("want 1 converted rule, got %+v", rules)
 	}
@@ -92,7 +92,7 @@ func TestGatherDRA_ToleratesMissingDeviceTaintRuleAPI(t *testing.T) {
 	client.PrependReactor("list", "devicetaintrules", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("the server could not find the requested resource")
 	})
-	claims, _, _, rules := gatherDRA(context.Background(), client, []corev1.Pod{*draPendingPod()})
+	claims, _, _, rules, _ := gatherDRA(context.Background(), client, []corev1.Pod{*draPendingPod()})
 	if len(claims) != 1 {
 		t.Fatalf("claims=%d, want 1", len(claims))
 	}

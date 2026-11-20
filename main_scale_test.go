@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/sairohithg/kubectl-why-pending/pkg/diagnose"
+	"github.com/SaiRohithGuntupally/kubectl-why-pending/pkg/diagnose"
 )
 
 // referenceFold reproduces the pre-streaming gatherNodeViews logic over a fully
@@ -29,22 +29,8 @@ func referenceFold(pods []corev1.Pod) (map[string]diagnose.Resources, []diagnose
 		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
 			continue
 		}
-		r := diagnose.PodRequests(p)
-		cur := used[p.Spec.NodeName]
-		cur.CPUMilli += r.CPUMilli
-		cur.MemBytes += r.MemBytes
-		if cur.Extended == nil {
-			cur.Extended = map[string]int64{}
-		}
-		for name, v := range r.Extended {
-			cur.Extended[name] += v
-		}
-		used[p.Spec.NodeName] = cur
-		placed = append(placed, diagnose.PlacedPod{
-			Namespace: p.Namespace,
-			NodeName:  p.Spec.NodeName,
-			Labels:    p.Labels,
-		})
+		addUsage(used, p)
+		placed = append(placed, placedPod(p))
 	}
 	return used, placed, chain
 }

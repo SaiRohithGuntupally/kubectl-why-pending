@@ -77,7 +77,8 @@ type Input struct {
 	Nodes          []NodeView
 	ClusterPods    []PlacedPod  // all placed pods, for topology/affinity analysis
 	SchedulerEvent string       // latest FailedScheduling message, if any
-	UnboundPVCs    []string     // referenced PVCs that exist but are not Bound
+	UnboundPVCs    []string     // referenced PVCs that exist but are not Bound (Immediate binding)
+	WaitingPVCs    []string     // unbound PVCs whose StorageClass is WaitForFirstConsumer (normal)
 	MissingPVCs    []string     // referenced PVCs that don't exist at all
 	Chain          *ChainStatus // GPU enablement-chain status (nil if not analyzed)
 
@@ -90,6 +91,13 @@ type Input struct {
 	// DeviceTaintRules (k8s 1.37+) taint devices cluster-wide; nil when the
 	// cluster doesn't serve DeviceTaintRule at all.
 	DRATaintRules []resourcev1.DeviceTaintRule
+	// DRAClaimsError is set when ResourceClaims in the pod's namespace could
+	// not be read (RBAC, or an older resource.k8s.io version). Analysis then
+	// says "unknown" instead of "not found".
+	DRAClaimsError string
+	// ReadErrors are API reads that failed for this pod (PVCs, events). They
+	// are surfaced as a Warning so a forbidden read is never silent.
+	ReadErrors []string
 }
 
 // Result is the diagnosis for one pod.
@@ -123,6 +131,21 @@ func Analyze(in Input) Result {
 		SchedulerEvent: in.SchedulerEvent,
 	}
 
+	pre, done := triage(in.Pod)
+	res.Causes = append(res.Causes, pre...)
+	if done {
+		return res
+	}
+
+	if len(in.ReadErrors) > 0 {
+		res.Causes = append(res.Causes, Cause{
+			Severity: Warning,
+			Title:    "Couldn't read some objects; diagnosis may be incomplete",
+			Detail:   strings.Join(in.ReadErrors, "\n"),
+			Fix:      "Check RBAC for your user (get on persistentvolumeclaims, list on events in this namespace) or retry if the API server was busy.",
+		})
+	}
+
 	if len(in.MissingPVCs) > 0 {
 		res.Causes = append(res.Causes, Cause{
 			Severity: Blocker,
@@ -137,15 +160,25 @@ func Analyze(in Input) Result {
 			Severity: Blocker,
 			Title:    "Unbound PersistentVolumeClaim(s)",
 			Detail:   fmt.Sprintf("The pod mounts PVC(s) that are not Bound: %s.", strings.Join(in.UnboundPVCs, ", ")),
-			Fix:      "Check the PVC and its StorageClass. On-prem, this usually means no PersistentVolume satisfies the claim (no dynamic provisioner, or no matching static PV). Note: a WaitForFirstConsumer StorageClass intentionally stays Pending until scheduling — fix the other causes first.",
+			Fix:      "Check the PVC and its StorageClass. On-prem, this usually means no PersistentVolume satisfies the claim (no dynamic provisioner, or no matching static PV).",
+		})
+	}
+
+	if len(in.WaitingPVCs) > 0 {
+		res.Causes = append(res.Causes, Cause{
+			Severity: Info,
+			Title:    "PVC(s) waiting for the pod to be scheduled (WaitForFirstConsumer)",
+			Detail:   fmt.Sprintf("PVC(s) %s use a WaitForFirstConsumer StorageClass, so they stay Pending until the scheduler picks a node. That is expected and not the blocker.", strings.Join(in.WaitingPVCs, ", ")),
+			Fix:      "Fix the scheduling causes listed here; the volume is provisioned once a node is chosen.",
 		})
 	}
 
 	// Classify every node by the first hard predicate it fails.
 	counts := map[string]int{}
 	taintSet := map[string]bool{}
-	eligible := 0 // nodes passing taint/selector/affinity/cordon
-	fit := 0      // eligible nodes that also have room
+	eligible := 0  // nodes passing taint/selector/affinity/cordon
+	fit := 0       // eligible nodes that also have room
+	cpuMemFit := 0 // eligible nodes with room for CPU and memory specifically
 	var eligibleViews []NodeView
 	var maxFreeCPU, maxFreeMem int64
 	var sumFreeCPU, sumFreeMem int64
@@ -154,11 +187,11 @@ func Analyze(in Input) Result {
 	for _, nv := range in.Nodes {
 		node := nv.Node
 		switch {
-		case IsCordoned(node):
+		case IsCordoned(node) && !toleratesTaint(in.Pod, unschedulableTaint):
 			counts["cordoned"]++
 			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "cordoned (SchedulingDisabled)"})
 			continue
-		case !IsReady(node):
+		case !IsReady(node) && !toleratesTaint(in.Pod, notReadyTaint):
 			counts["notready"]++
 			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "NotReady"})
 			continue
@@ -210,6 +243,13 @@ func Analyze(in Input) Result {
 		cpuOK := freeCPU >= req.CPUMilli
 		memOK := freeMem >= req.MemBytes
 		if cpuOK && memOK {
+			cpuMemFit++
+		}
+		// The scheduler only checks ephemeral-storage when the pod requests it,
+		// and every node has a max-pods allocatable (110 by default).
+		ephOK := req.EphemeralBytes == 0 || alloc.EphemeralBytes-nv.Used.EphemeralBytes >= req.EphemeralBytes
+		podsOK := alloc.Pods == 0 || nv.Used.Pods+1 <= alloc.Pods
+		if cpuOK && memOK && ephOK && podsOK {
 			fit++
 			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, true, "fits (CPU/memory)"})
 		} else {
@@ -222,7 +262,20 @@ func Analyze(in Input) Result {
 				counts["insufficient-mem"]++
 				lack = append(lack, "memory")
 			}
-			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "insufficient " + strings.Join(lack, "+")})
+			if !ephOK {
+				counts["insufficient-ephemeral"]++
+				lack = append(lack, "ephemeral-storage")
+			}
+			reason := "insufficient " + strings.Join(lack, "+")
+			if !podsOK {
+				counts["too-many-pods"]++
+				if len(lack) == 0 {
+					reason = fmt.Sprintf("at max-pods (%d/%d)", nv.Used.Pods, alloc.Pods)
+				} else {
+					reason += fmt.Sprintf(", at max-pods (%d/%d)", nv.Used.Pods, alloc.Pods)
+				}
+			}
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, reason})
 		}
 	}
 
@@ -286,10 +339,13 @@ func Analyze(in Input) Result {
 	}
 
 	// Resource analysis only matters when some nodes were otherwise eligible.
-	if eligible > 0 && fit == 0 {
+	if eligible > 0 && fit == 0 && cpuMemFit == 0 {
 		fitsOnEmptyNode := req.CPUMilli <= maxAllocCPU && req.MemBytes <= maxAllocMem
 		fitsByTotalFree := req.CPUMilli <= sumFreeCPU && req.MemBytes <= sumFreeMem
-		fitsOnLargestFree := req.CPUMilli <= maxFreeCPU && req.MemBytes <= maxFreeMem
+		// No eligible node has room for both CPU and memory (cpuMemFit == 0). If
+		// the cluster has enough in aggregate, that is fragmentation, even when
+		// the largest free CPU and the largest free memory sit on different
+		// nodes (comparing those two maxima would wrongly say "not enough").
 		switch {
 		case !fitsOnEmptyNode:
 			// No single node is big enough even when completely empty —
@@ -303,12 +359,12 @@ func Analyze(in Input) Result {
 					FormatCPU(maxAllocCPU), FormatMem(maxAllocMem)),
 				Fix: "Reduce the pod's resource requests, split the workload, or add a node large enough to hold it.",
 			})
-		case fitsByTotalFree && !fitsOnLargestFree:
+		case fitsByTotalFree:
 			res.Causes = append(res.Causes, Cause{
 				Severity: Blocker,
 				Title:    "Resource fragmentation — capacity exists, but not on any single node",
 				Detail: fmt.Sprintf(
-					"Pod requests %s CPU / %s memory.\nTotal free across %d eligible node(s): %s CPU / %s memory — enough in aggregate.\nBut the largest single node only has %s CPU / %s memory free, and a pod must fit on ONE node.",
+					"Pod requests %s CPU / %s memory.\nTotal free across %d eligible node(s): %s CPU / %s memory — enough in aggregate.\nBut no single node has both free at once (most free CPU on any node: %s; most free memory: %s), and a pod must fit on ONE node.",
 					FormatCPU(req.CPUMilli), FormatMem(req.MemBytes),
 					eligible, FormatCPU(sumFreeCPU), FormatMem(sumFreeMem),
 					FormatCPU(maxFreeCPU), FormatMem(maxFreeMem)),
@@ -327,8 +383,26 @@ func Analyze(in Input) Result {
 		}
 	}
 
+	if n := counts["insufficient-ephemeral"]; n > 0 {
+		res.Causes = append(res.Causes, Cause{
+			Severity: severityIf(fit == 0, Blocker, Warning),
+			Title:    fmt.Sprintf("%d/%d eligible node(s) lack ephemeral-storage", n, eligible),
+			Detail:   fmt.Sprintf("Pod requests %s of ephemeral-storage (container scratch space, logs, emptyDir). The scheduler compares that against each node's allocatable ephemeral-storage minus what other pods requested; small root disks on bare-metal nodes run out first.", FormatMem(req.EphemeralBytes)),
+			Fix:      "Lower the pod's ephemeral-storage request, clean up or grow the nodes' root/kubelet disk, or move emptyDir data to a PersistentVolume.",
+		})
+	}
+	if n := counts["too-many-pods"]; n > 0 {
+		res.Causes = append(res.Causes, Cause{
+			Severity: severityIf(fit == 0, Blocker, Warning),
+			Title:    fmt.Sprintf("%d/%d eligible node(s) are at their max-pods limit", n, eligible),
+			Detail:   "Each node advertises how many pods it may run (kubelet --max-pods, 110 by default). Those nodes are full by pod count even if CPU and memory are free.",
+			Fix:      "Raise the kubelet's maxPods (and make sure the pod CIDR per node is big enough), spread small pods onto other nodes, or add nodes.",
+		})
+	}
+
 	// Extended resources (GPUs, hugepages, custom device-plugin resources).
 	res.Causes = append(res.Causes, AnalyzeExtendedResources(in.Pod, eligibleViews, in.Chain)...)
+	nodeReasons := extendedNodeReasons(in.Pod, eligibleViews)
 
 	// Cross-pod constraints: topology spread and inter-pod (anti-)affinity.
 	allNodes := make([]*corev1.Node, 0, len(in.Nodes))
@@ -339,25 +413,65 @@ func Analyze(in Input) Result {
 	for _, nv := range eligibleViews {
 		eligibleNodes = append(eligibleNodes, nv.Node)
 	}
-	res.Causes = append(res.Causes, AnalyzeTopologySpread(in.Pod, allNodes, eligibleNodes, in.ClusterPods)...)
-	res.Causes = append(res.Causes, AnalyzePodAffinity(in.Pod, eligibleNodes, in.ClusterPods)...)
+	spreadCauses, spreadReasons := topologySpread(in.Pod, allNodes, eligibleNodes, in.ClusterPods)
+	res.Causes = append(res.Causes, spreadCauses...)
+	affCauses, affReasons := podAffinity(in.Pod, allNodes, eligibleNodes, in.ClusterPods)
+	res.Causes = append(res.Causes, affCauses...)
+	for _, m := range []map[string]string{spreadReasons, affReasons} {
+		for n, r := range m {
+			setReason(nodeReasons, n, r)
+		}
+	}
 
 	// Dynamic Resource Allocation: pods requesting devices via resourceClaims are
 	// invisible to the extended-resource path, so diagnose them separately.
 	if UsesDRA(in.Pod) {
-		res.Causes = append(res.Causes, AnalyzeDRA(in.Pod, in.DRAClaims, in.DRASlices, in.DRAClasses, in.DRATaintRules)...)
+		if in.DRAClaimsError != "" {
+			res.Causes = append(res.Causes, Cause{
+				Severity: Info,
+				Title:    "Couldn't read ResourceClaims; DRA status unknown",
+				Detail:   "Listing ResourceClaims in namespace " + in.Pod.Namespace + " failed: " + in.DRAClaimsError + ". Without them this tool can't tell whether the pod's device claims are allocated.",
+				Fix:      "Grant list on resourceclaims.resource.k8s.io, or check `kubectl get resourceclaims -n " + in.Pod.Namespace + "` yourself. Clusters older than 1.34 serve only the beta DRA API.",
+			})
+		} else {
+			draCauses := AnalyzeDRA(in.Pod, in.DRAClaims, in.DRASlices, in.DRAClasses, in.DRATaintRules)
+			res.Causes = append(res.Causes, draCauses...)
+			for _, c := range draCauses {
+				if c.Severity == Blocker {
+					for _, n := range eligibleNodes {
+						setReason(nodeReasons, n.Name, "DRA: "+c.Title)
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// Keep the per-node verdicts true after every stage, not just CPU/memory.
+	fit = 0
+	for i := range res.Nodes {
+		v := &res.Nodes[i]
+		if !v.Schedulable {
+			continue
+		}
+		if r, ok := nodeReasons[v.Name]; ok {
+			v.Schedulable = false
+			v.Reason = r
+			continue
+		}
+		fit++
 	}
 
 	// Honest about the limits of a static analysis. Whenever no specific cause
 	// was found, say so explicitly rather than emitting an empty diagnosis —
 	// the wording differs depending on whether any node looked schedulable.
-	if len(res.Causes) == 0 {
+	if !hasActionable(res.Causes) {
 		if fit > 0 {
 			res.Causes = append(res.Causes, Cause{
 				Severity: Info,
 				Title:    fmt.Sprintf("%d node(s) look like they should fit", fit),
-				Detail:   "Static analysis didn't find a hard blocker. The cause is likely dynamic: pod priority/preemption, pod topology spread or pod (anti-)affinity, extended/custom resources (GPUs), or simply a very recent scheduling attempt.",
-				Fix:      "Read the scheduler event below, and check `kubectl describe pod` for topology-spread or pod-affinity constraints.",
+				Detail:   "None of the checks this tool models found a blocker. The cause is likely something not modelled yet (hostPort conflicts, volume topology or attach limits, maxPods, DRA device selectors) or dynamic (priority/preemption, or the pod was only just created and the scheduler hasn't retried since the cluster changed).",
+				Fix:      "Read the scheduler event below; it is the scheduler's own verdict from its last attempt.",
 			})
 		} else {
 			// Defensive: every fit==0 path above should already have recorded a
@@ -372,8 +486,29 @@ func Analyze(in Input) Result {
 		}
 	}
 
+	// The scheduler already has a plan (preemption / binding in progress), so
+	// nothing here is a hard blocker for the user to act on yet.
+	if in.Pod.Status.NominatedNodeName != "" {
+		for i := range res.Causes {
+			if res.Causes[i].Severity == Blocker {
+				res.Causes[i].Severity = Warning
+			}
+		}
+	}
+
 	sortCauses(res.Causes)
 	return res
+}
+
+// hasActionable reports whether any cause is a Blocker or Warning (Info-only
+// results still get the honest "no static cause" fallback).
+func hasActionable(cs []Cause) bool {
+	for _, c := range cs {
+		if c.Severity != Info {
+			return true
+		}
+	}
+	return false
 }
 
 func sortCauses(c []Cause) {

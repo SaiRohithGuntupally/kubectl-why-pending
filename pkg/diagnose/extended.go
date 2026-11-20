@@ -63,3 +63,32 @@ func AnalyzeExtendedResources(pod *corev1.Pod, eligible []NodeView, chain *Chain
 	}
 	return causes
 }
+
+// extendedNodeReasons returns, for each eligible node that can't supply the
+// pod's extended-resource requests, why (for the per-node verdicts).
+func extendedNodeReasons(pod *corev1.Pod, eligible []NodeView) map[string]string {
+	out := map[string]string{}
+	req := PodRequests(pod).Extended
+	names := make([]string, 0, len(req))
+	for n, q := range req {
+		if q > 0 {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	for _, nv := range eligible {
+		alloc := Allocatable(nv.Node).Extended
+		for _, name := range names {
+			capacity := alloc[name]
+			if capacity <= 0 {
+				out[nv.Node.Name] = "does not advertise " + name
+				break
+			}
+			if capacity-nv.Used.Extended[name] < req[name] {
+				out[nv.Node.Name] = "insufficient " + name
+				break
+			}
+		}
+	}
+	return out
+}

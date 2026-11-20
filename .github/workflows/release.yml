@@ -19,7 +19,7 @@ jobs:
           cache: true
 
       - name: Cross-compile tarballs + checksums
-        run: make release
+        run: make release VERSION=${{ github.ref_name }}
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

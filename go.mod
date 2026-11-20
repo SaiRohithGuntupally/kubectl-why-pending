@@ -1,4 +1,4 @@
-module github.com/sairohithg/kubectl-why-pending
+module github.com/SaiRohithGuntupally/kubectl-why-pending
 
 go 1.26.4
 

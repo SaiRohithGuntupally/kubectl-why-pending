@@ -6,7 +6,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/sairohithg/kubectl-why-pending/pkg/diagnose"
+	"github.com/SaiRohithGuntupally/kubectl-why-pending/pkg/diagnose"
 )
 
 // structured reports whether the output format is a machine-readable one.

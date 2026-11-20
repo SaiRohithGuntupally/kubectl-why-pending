@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sairohithg/kubectl-why-pending/pkg/diagnose"
+	"github.com/SaiRohithGuntupally/kubectl-why-pending/pkg/diagnose"
 )
 
 type writer struct {
