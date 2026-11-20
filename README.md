@@ -80,7 +80,9 @@ Then the real scheduling causes:
   total, RuntimeClass `overhead` included.
 - **Ephemeral-storage and max-pods** — nodes whose root disk or pod-count limit
   (kubelet `maxPods`, 110 by default) is used up, even with CPU and memory free.
-- **Untolerated taints** — including the classic control-plane taint on small clusters.
+- **Untolerated taints** — including the classic control-plane taint on small
+  clusters. A pod pinned to a tainted or cordoned node is told about that node
+  by name.
 - **nodeSelector / required nodeAffinity** mismatches.
 - **Extended resources** (`nvidia.com/gpu`, hugepages, custom device-plugin
   resources) — no node advertises it (device plugin missing / no such hardware),
@@ -99,7 +101,8 @@ Then the real scheduling causes:
 - **Pod topology spread** (`DoNotSchedule`) — computes the skew per domain with
   the scheduler's default node inclusion (nodes the pod can't select aren't
   domains, terminating pods don't count) and tells you which under-filled
-  zone/host needs a node.
+  zone/host needs a node, or that tainted control-plane nodes are the empty
+  domains and `nodeTaintsPolicy: Honor` is the fix.
 - **Inter-pod affinity / anti-affinity** (required) — including the classic
   "one replica per host" that runs out of hosts, the first-replica self-match
   exception, and existing pods' anti-affinity against this pod.

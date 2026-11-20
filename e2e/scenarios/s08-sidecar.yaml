@@ -1,0 +1,15 @@
+# EXPECT: "larger than any single node". Sidecar (restartPolicy: Always) 3 CPU
+# + main 3 CPU = 6 CPU on 4-CPU kind nodes. v0.6.0 counted only 3 and said it fits.
+apiVersion: v1
+kind: Pod
+metadata: {name: sidecar, namespace: s08}
+spec:
+  initContainers:
+    - name: mesh
+      restartPolicy: Always
+      image: registry.k8s.io/pause:3.10
+      resources: {requests: {cpu: "3"}}
+  containers:
+    - name: c
+      image: registry.k8s.io/pause:3.10
+      resources: {requests: {cpu: "3"}}

@@ -3,6 +3,7 @@ package diagnose
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -92,6 +93,7 @@ func topologySpread(pod *corev1.Pod, allNodes, eligible []*corev1.Node, placed [
 
 		nodeByName := map[string]*corev1.Node{}
 		domains := map[string]int{}
+		domainNodes := map[string][]*corev1.Node{}
 		for _, n := range allNodes {
 			d, ok := nodeDomain(n, c.TopologyKey)
 			if !ok {
@@ -104,6 +106,7 @@ func topologySpread(pod *corev1.Pod, allNodes, eligible []*corev1.Node, placed [
 				continue
 			}
 			nodeByName[n.Name] = n
+			domainNodes[d] = append(domainNodes[d], n)
 			if _, seen := domains[d]; !seen {
 				domains[d] = 0
 			}
@@ -153,17 +156,45 @@ func topologySpread(pod *corev1.Pod, allNodes, eligible []*corev1.Node, placed [
 			setReason(reasons, n.Name, fmt.Sprintf("topology spread: %s=%s would exceed maxSkew %d", c.TopologyKey, d, c.MaxSkew))
 		}
 		if !feasible {
+			detail := fmt.Sprintf(
+				"Matching pods are distributed across the %q domains as %s. The least-filled domain has %d, but no domain with a schedulable node can take this pod without pushing the skew above maxSkew=%d.",
+				c.TopologyKey, formatDomains(domains), globalMin, c.MaxSkew)
+			fix := "Add a node in the least-populated domain (the under-filled zone/host the spread wants to balance into), raise maxSkew, or relax whenUnsatisfiable to ScheduleAnyway."
+			if tainted := taintOnlyMinDomains(pod, domains, domainNodes, globalMin); len(tainted) > 0 && !honorTaints {
+				// Classic small-cluster trap: tainted control-plane nodes count
+				// as empty domains because nodeTaintsPolicy defaults to Ignore.
+				detail += fmt.Sprintf("\nThe least-filled domain(s) %s exist only on nodes with taints this pod doesn't tolerate (often control-plane/etcd nodes). With the default nodeTaintsPolicy: Ignore they still count as domains with 0 pods, so the skew can never even out.", strings.Join(tainted, ", "))
+				fix = "Set nodeTaintsPolicy: Honor on this topologySpreadConstraint so tainted nodes stop counting as domains (or add a toleration if the pod may run there). Adding nodes won't help."
+			}
 			causes = append(causes, Cause{
 				Severity: Blocker,
 				Title:    fmt.Sprintf("Topology spread constraint can't be satisfied (key %q, maxSkew %d)", c.TopologyKey, c.MaxSkew),
-				Detail: fmt.Sprintf(
-					"Matching pods are distributed across the %q domains as %s. The least-filled domain has %d, but no domain with a schedulable node can take this pod without pushing the skew above maxSkew=%d.",
-					c.TopologyKey, formatDomains(domains), globalMin, c.MaxSkew),
-				Fix: "Add a node in the least-populated domain (the under-filled zone/host the spread wants to balance into), raise maxSkew, or relax whenUnsatisfiable to ScheduleAnyway.",
+				Detail:   detail,
+				Fix:      fix,
 			})
 		}
 	}
 	return causes, reasons
+}
+
+// taintOnlyMinDomains returns the least-filled domains whose nodes all carry
+// taints the pod doesn't tolerate. Empty unless EVERY least-filled domain is
+// like that (then those taints are why the spread can't balance).
+func taintOnlyMinDomains(pod *corev1.Pod, domains map[string]int, domainNodes map[string][]*corev1.Node, globalMin int) []string {
+	var out []string
+	for d, n := range domains {
+		if n != globalMin {
+			continue
+		}
+		for _, node := range domainNodes[d] {
+			if len(UntoleratedTaints(pod, node)) == 0 {
+				return nil
+			}
+		}
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // AnalyzePodAffinity explains required inter-pod affinity / anti-affinity that

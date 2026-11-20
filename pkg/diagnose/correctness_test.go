@@ -303,3 +303,91 @@ func TestReadErrorsSurface(t *testing.T) {
 		t.Fatalf("want a read-error warning only, got: %s", titles(r))
 	}
 }
+
+// Live-judge cluster shape (report 2026-11-20): 3 control-plane nodes tainted
+// node-role.kubernetes.io/etcd:NoExecute, 3 untainted workers.
+func judgeCluster() []NodeView {
+	var out []NodeView
+	for _, n := range []string{"cp-1", "cp-2", "cp-3"} {
+		node := readyNode(n, "16", "32Gi")
+		node.Spec.Taints = []corev1.Taint{{Key: "node-role.kubernetes.io/etcd", Value: "true", Effect: corev1.TaintEffectNoExecute}}
+		out = append(out, NodeView{Node: node})
+	}
+	for _, n := range []string{"w-1", "w-2", "w-3"} {
+		out = append(out, NodeView{Node: readyNode(n, "8", "16Gi")})
+	}
+	return out
+}
+
+// Report scenario 4: pinned to a tainted control-plane node. The answer is that
+// node's taint, named; the selector is context.
+func TestPinnedToTaintedNodeNamesTheNode(t *testing.T) {
+	p := pod("1m", "8Mi")
+	p.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "cp-1"}
+	r := Analyze(Input{Pod: p, Nodes: judgeCluster()})
+	if len(r.Causes) == 0 || r.Causes[0].Severity != Blocker || !strings.Contains(r.Causes[0].Detail, "cp-1 (node-role.kubernetes.io/etcd=true:NoExecute)") {
+		t.Fatalf("top cause should name cp-1 and its taint, got: %s / %+v", titles(r), r.Causes)
+	}
+	for _, c := range r.Causes {
+		if strings.Contains(c.Title, "nodeSelector") && c.Severity == Blocker {
+			t.Errorf("selector matched a node; it must not be a Blocker: %s", titles(r))
+		}
+	}
+}
+
+// Report scenario 20: pinned to a cordoned worker. Cordon is the blocker.
+func TestPinnedToCordonedNodeIsBlocker(t *testing.T) {
+	nodes := judgeCluster()
+	nodes[3].Node.Spec.Unschedulable = true // w-1
+	nodes[3].Node.Spec.Taints = []corev1.Taint{{Key: corev1.TaintNodeUnschedulable, Effect: corev1.TaintEffectNoSchedule}}
+	p := pod("1m", "8Mi")
+	p.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "w-1"}
+	r := Analyze(Input{Pod: p, Nodes: nodes})
+	if len(r.HasBlockerCauses()) != 1 || !strings.Contains(r.Causes[0].Title, "cordoned") {
+		t.Fatalf("cordon should be the single blocker, got: %s", titles(r))
+	}
+}
+
+// Report scenario 11: hostname spread where the only empty domains are the
+// tainted control-plane nodes. Fix must be nodeTaintsPolicy: Honor, not
+// "add a node".
+func TestSpreadBlockedByTaintedEmptyDomains(t *testing.T) {
+	p := appPod("spread")
+	p.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{{
+		MaxSkew: 1, TopologyKey: "kubernetes.io/hostname", WhenUnsatisfiable: corev1.DoNotSchedule,
+		LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "spread"}},
+	}}
+	var placed []PlacedPod
+	for _, w := range []string{"w-1", "w-2", "w-3"} {
+		placed = append(placed, PlacedPod{Namespace: "default", NodeName: w, Labels: map[string]string{"app": "spread"}})
+	}
+	r := Analyze(Input{Pod: p, Nodes: judgeCluster(), ClusterPods: placed})
+	var spread *Cause
+	for i := range r.Causes {
+		if strings.Contains(r.Causes[i].Title, "Topology spread") {
+			spread = &r.Causes[i]
+		}
+	}
+	if spread == nil || !strings.Contains(spread.Fix, "nodeTaintsPolicy: Honor") {
+		t.Fatalf("want spread blocker recommending nodeTaintsPolicy: Honor, got: %+v", r.Causes)
+	}
+}
+
+// Report 2.2: a warning (tainted control plane) must not hide the verdict line.
+func TestWarningsDoNotSuppressVerdictLine(t *testing.T) {
+	r := Analyze(Input{Pod: pod("1m", "8Mi"), Nodes: judgeCluster()})
+	if !hasCause(r, "should fit") {
+		t.Fatalf("want an explicit 'should fit' line next to the taint warning, got: %s", titles(r))
+	}
+}
+
+// HasBlockerCauses returns just the blockers (test helper).
+func (r Result) HasBlockerCauses() []Cause {
+	var out []Cause
+	for _, c := range r.Causes {
+		if c.Severity == Blocker {
+			out = append(out, c)
+		}
+	}
+	return out
+}

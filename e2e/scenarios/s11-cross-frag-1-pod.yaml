@@ -1,0 +1,14 @@
+# EXPECT: "fragmentation". Fillers leave worker CPU-poor and worker2
+# memory-poor; together they have enough, neither alone does. v0.6.0 said
+# "combined free capacity isn't enough" here.
+apiVersion: v1
+kind: Pod
+metadata: {name: cross-frag, namespace: s11}
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - {key: kubernetes.io/hostname, operator: In, values: [why-pending-e2e-worker, why-pending-e2e-worker2]}
+  containers: [{name: c, image: registry.k8s.io/pause:3.10, resources: {requests: {cpu: "2", memory: 3Gi}}}]

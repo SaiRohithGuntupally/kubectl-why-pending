@@ -1,0 +1,20 @@
+# EXPECT: "DeviceClass(es) not found". No DRA driver in kind: zero DeviceClasses
+# and zero ResourceSlices. v0.6.0 gave a generic "not allocated" here.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata: {name: gpu-claim, namespace: s12}
+spec:
+  devices:
+    requests:
+      - name: gpu
+        exactly: {deviceClassName: fake-gpu.example.com}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: dra, namespace: s12}
+spec:
+  resourceClaims: [{name: gpu, resourceClaimName: gpu-claim}]
+  containers:
+    - name: c
+      image: registry.k8s.io/pause:3.10
+      resources: {claims: [{name: gpu}]}

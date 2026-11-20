@@ -1,0 +1,7 @@
+# EXPECT: top blocker names worker3 and its taint; nodeSelector is not a Blocker.
+apiVersion: v1
+kind: Pod
+metadata: {name: pinned-tainted, namespace: s13}
+spec:
+  nodeSelector: {kubernetes.io/hostname: why-pending-e2e-worker3}
+  containers: [{name: c, image: registry.k8s.io/pause:3.10}]

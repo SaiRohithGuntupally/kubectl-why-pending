@@ -106,6 +106,9 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 		if structured(opts.output) {
 			return false, emit(opts.output, []diagnose.Result{})
 		}
+		if opts.podName != "" {
+			return false, nil // pendingPods already said why (e.g. "is Running")
+		}
 		scope := "namespace " + opts.namespace
 		if opts.allNamespaces {
 			scope = "any namespace"
@@ -360,11 +363,14 @@ func gatherDRA(ctx context.Context, client kubernetes.Interface, pending []corev
 		}
 		claims = append(claims, cl.Items...)
 	}
+	// nil means "couldn't read"; a successful read with zero items must be a
+	// non-nil empty slice, because an empty list often decodes to nil and the
+	// engine would then skip the "no DeviceClass" / "no driver" hints.
 	if sl, err := client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{}); err == nil {
-		slices = sl.Items
+		slices = append([]resourcev1.ResourceSlice{}, sl.Items...)
 	}
 	if cc, err := client.ResourceV1().DeviceClasses().List(ctx, metav1.ListOptions{}); err == nil {
-		classes = cc.Items
+		classes = append([]resourcev1.DeviceClass{}, cc.Items...)
 	}
 	return claims, slices, classes, gatherDeviceTaintRules(ctx, client), claimErrs
 }
@@ -375,7 +381,7 @@ func gatherDRA(ctx context.Context, client kubernetes.Interface, pending []corev
 // has no such resource at all, which yields nil.
 func gatherDeviceTaintRules(ctx context.Context, client kubernetes.Interface) []resourcev1.DeviceTaintRule {
 	if rl, err := client.ResourceV1().DeviceTaintRules().List(ctx, metav1.ListOptions{}); err == nil {
-		return rl.Items
+		return append([]resourcev1.DeviceTaintRule{}, rl.Items...)
 	}
 	rl, err := client.ResourceV1beta2().DeviceTaintRules().List(ctx, metav1.ListOptions{})
 	if err != nil {

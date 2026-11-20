@@ -184,8 +184,24 @@ func Analyze(in Input) Result {
 	var sumFreeCPU, sumFreeMem int64
 	var maxAllocCPU, maxAllocMem int64 // biggest single node, if it were empty
 
+	// Placement (nodeSelector / required nodeAffinity) is checked first: it says
+	// which nodes the user wants, so a pod pinned to a cordoned or tainted node
+	// is told about THAT node, not about the nodes it never wanted.
+	placementMatches := 0
+	var taintedNodes []string // "node (key=value:Effect)" for nodes the pod selected
 	for _, nv := range in.Nodes {
 		node := nv.Node
+		if !MatchesNodeSelector(in.Pod, node) {
+			counts["selector"]++
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "nodeSelector mismatch"})
+			continue
+		}
+		if !MatchesNodeAffinity(in.Pod, node) {
+			counts["affinity"]++
+			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "nodeAffinity mismatch"})
+			continue
+		}
+		placementMatches++
 		switch {
 		case IsCordoned(node) && !toleratesTaint(in.Pod, unschedulableTaint):
 			counts["cordoned"]++
@@ -199,21 +215,15 @@ func Analyze(in Input) Result {
 		if bad := UntoleratedTaints(in.Pod, node); len(bad) > 0 {
 			counts["taint"]++
 			keys := make([]string, 0, len(bad))
+			full := make([]string, 0, len(bad))
 			for _, t := range bad {
-				taintSet[fmt.Sprintf("%s=%s:%s", t.Key, t.Value, t.Effect)] = true
+				ts := fmt.Sprintf("%s=%s:%s", t.Key, t.Value, t.Effect)
+				taintSet[ts] = true
 				keys = append(keys, t.Key)
+				full = append(full, ts)
 			}
+			taintedNodes = append(taintedNodes, fmt.Sprintf("%s (%s)", node.Name, strings.Join(full, ", ")))
 			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "untolerated taint: " + strings.Join(keys, ",")})
-			continue
-		}
-		if !MatchesNodeSelector(in.Pod, node) {
-			counts["selector"]++
-			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "nodeSelector mismatch"})
-			continue
-		}
-		if !MatchesNodeAffinity(in.Pod, node) {
-			counts["affinity"]++
-			res.Nodes = append(res.Nodes, NodeVerdict{node.Name, false, "nodeAffinity mismatch"})
 			continue
 		}
 
@@ -303,17 +313,24 @@ func Analyze(in Input) Result {
 
 	if len(taintSet) > 0 {
 		taints := keys(taintSet)
+		title := fmt.Sprintf("%d/%d node(s) have taints the pod doesn't tolerate", counts["taint"], total)
+		detail := "Untolerated taints: " + strings.Join(taints, ", ") + ".\nOn-prem clusters commonly taint control-plane nodes (node-role.kubernetes.io/control-plane or etcd), so a small cluster can have nowhere left to schedule."
+		if placementMatches < total && len(taintedNodes) <= 3 {
+			// The pod's selector/affinity narrowed it to these nodes: name them.
+			title = "The node(s) this pod selects carry taints it doesn't tolerate"
+			detail = "Selected by the pod's nodeSelector/nodeAffinity, but tainted: " + strings.Join(taintedNodes, "; ") + "."
+		}
 		res.Causes = append(res.Causes, Cause{
 			Severity: severityIf(eligible == 0, Blocker, Warning),
-			Title:    fmt.Sprintf("%d/%d node(s) have taints the pod doesn't tolerate", counts["taint"], total),
-			Detail:   "Untolerated taints: " + strings.Join(taints, ", ") + ".\nOn-prem clusters commonly taint control-plane nodes (node-role.kubernetes.io/control-plane), so a small cluster can have nowhere left to schedule.",
+			Title:    title,
+			Detail:   detail,
 			Fix:      "Add a matching toleration to the pod spec, or remove the taint with `kubectl taint nodes <node> <key>-` if the node should accept workloads.",
 		})
 	}
 
 	if n := counts["selector"]; n > 0 {
 		res.Causes = append(res.Causes, Cause{
-			Severity: severityIf(eligible == 0, Blocker, Warning),
+			Severity: severityIf(placementMatches == 0, Blocker, Info),
 			Title:    fmt.Sprintf("%d/%d node(s) don't match the pod's nodeSelector", n, total),
 			Detail:   "Required nodeSelector: " + formatMap(in.Pod.Spec.NodeSelector) + ".",
 			Fix:      "Label a node to match (`kubectl label node <node> key=value`) or correct the pod's nodeSelector.",
@@ -322,7 +339,7 @@ func Analyze(in Input) Result {
 
 	if n := counts["affinity"]; n > 0 {
 		res.Causes = append(res.Causes, Cause{
-			Severity: severityIf(eligible == 0, Blocker, Warning),
+			Severity: severityIf(placementMatches == 0, Blocker, Info),
 			Title:    fmt.Sprintf("%d/%d node(s) don't match required nodeAffinity", n, total),
 			Detail:   "The pod's requiredDuringScheduling node affinity excludes these nodes.",
 			Fix:      "Adjust the affinity rules or label nodes so at least one satisfies them.",
@@ -331,7 +348,7 @@ func Analyze(in Input) Result {
 
 	if n := counts["cordoned"]; n > 0 {
 		res.Causes = append(res.Causes, Cause{
-			Severity: severityIf(eligible == 0 && len(taintSet) == 0, Blocker, Info),
+			Severity: severityIf(eligible == 0, Blocker, Info),
 			Title:    fmt.Sprintf("%d/%d node(s) are cordoned (SchedulingDisabled)", n, total),
 			Detail:   "Cordoned nodes are intentionally excluded from scheduling.",
 			Fix:      "If this was unintended: `kubectl uncordon <node>`.",
@@ -465,7 +482,10 @@ func Analyze(in Input) Result {
 	// Honest about the limits of a static analysis. Whenever no specific cause
 	// was found, say so explicitly rather than emitting an empty diagnosis —
 	// the wording differs depending on whether any node looked schedulable.
-	if !hasActionable(res.Causes) {
+	// Any result without a Blocker gets an explicit verdict line, even when
+	// warnings exist (e.g. tainted control-plane nodes): otherwise an
+	// unmodelled blocker would look like "no problem".
+	if !res.HasBlocker() {
 		if fit > 0 {
 			res.Causes = append(res.Causes, Cause{
 				Severity: Info,
@@ -498,17 +518,6 @@ func Analyze(in Input) Result {
 
 	sortCauses(res.Causes)
 	return res
-}
-
-// hasActionable reports whether any cause is a Blocker or Warning (Info-only
-// results still get the honest "no static cause" fallback).
-func hasActionable(cs []Cause) bool {
-	for _, c := range cs {
-		if c.Severity != Info {
-			return true
-		}
-	}
-	return false
 }
 
 func sortCauses(c []Cause) {

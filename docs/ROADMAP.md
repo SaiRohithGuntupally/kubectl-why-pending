@@ -2,8 +2,10 @@
 
 Living plan. Last updated 2026-11-20. Inputs: the September research pass in
 `docs/research/` (ROADMAP-2026-09.md is the original snapshot; "risk N" refers
-to `audit-2026-09.md`) and an external code review received 2026-11-20
-("review #N" below).
+to `audit-2026-09.md`), an external code review received 2026-11-20
+("review #N" below), and a live judge run of v0.6.0 on a 6-node RKE2 1.35
+cluster (3 etcd-tainted control-plane nodes, 3 workers; 21 scenarios: 12
+right, 3 partial, 6 wrong; "live #N" below).
 
 Guiding rule: **a confident wrong answer is worse than no answer.** Correctness
 work comes before features, and anything not modelled is said out loud.
@@ -13,8 +15,9 @@ work comes before features, and anything not modelled is said out loud.
 | Release | Theme | State |
 |---|---|---|
 | v0.6.0 | DRA device taints (k8s 1.37) | Released 2026-09-09 |
-| v0.7.0 | Stop the confident wrong answers | Code done, uncommitted. Release gate below |
-| v0.7.1 | Cross-check with the scheduler, finish fidelity | Next |
+| v0.7.0 | Stop the confident wrong answers | Released 2026-11-20 (krew-index #6712) |
+| v0.7.1 | Live-judge fixes | Code done, unreleased |
+| v0.7.2 | Cross-check with the scheduler, finish fidelity | Next |
 | v0.8.0 | Usability: kubectl-standard CLI, readable output | Planned |
 | v0.9.0 | Explain more than one stuck pod; deeper GPU/DRA | Planned |
 | v1.0.0 | Stable JSON contract + agent surface | Planned |
@@ -57,7 +60,12 @@ Done (2026-11-20, 21 new regression tests):
 - [x] Real-cluster e2e kit (`e2e/`, kind 1 control plane + 3 workers, 11
       scenarios, `expected.tsv`).
 
-Release gate (all required):
+v0.7.0 already fixes live #14 (gates), #15 (sidecar), #16 (ephemeral-storage),
+#19 (overhead), #21 (cross-dimension fragmentation), the always-empty
+scheduler event and the RBAC "not found" false blocker.
+
+Release gate (was planned; v0.7.0 shipped at the maintainer's call before the
+mini e2e run, which is now a post-release check):
 
 1. `./e2e/setup-mac.sh` on the Mac mini: 11/11 PASS, scheduler event renders,
    `-A` shows the image-pull pod. Anything FAIL becomes a fix before tagging.
@@ -66,7 +74,32 @@ Release gate (all required):
 3. Commit, tag `v0.7.0`. Do not touch `.krew.yaml` description; the krew bot
    only auto-merges version/uri/sha256 changes.
 
-## v0.7.1: finish scheduler fidelity
+## v0.7.1: live-judge fixes
+
+Done (2026-11-20), everything v0.7.0 still got wrong in the live run:
+
+- [x] Placement first: nodeSelector / nodeAffinity are checked before cordon,
+      NotReady and taints, so a pod pinned to a cordoned or tainted node gets
+      that node's problem as the Blocker (selector becomes Info) and the
+      tainted node is named with its taint. Live #4, #20.
+- [x] Topology spread blocked only because the least-filled domains are
+      tainted nodes (control plane, `nodeTaintsPolicy: Ignore` default): says
+      so and recommends `nodeTaintsPolicy: Honor` instead of "add a node".
+      Live #11.
+- [x] DRA hints fire on clusters with zero DeviceClasses / ResourceSlices (an
+      empty list decoded as nil and was treated as "couldn't read"). Live #17.
+- [x] The "should fit" / "couldn't determine a cause" verdict line appears
+      whenever there is no Blocker, not only when there are no causes at all
+      (a taint warning used to hide it). Review 2.2.
+- [x] A Running pod asked for by name prints only "is Running, not Pending".
+- [x] e2e kit: 6 new scenarios mirroring the live failures (sidecar, ephemeral,
+      overhead, cross-dimension fragmentation with fillers, DRA with no driver,
+      pinned to a tainted node); s07 now asserts the nodeTaintsPolicy fix.
+
+Still open from the live report: exit code for "Pending, cause unknown"
+(v0.8.0 item 6), max-pods / NotReady / preemption not exercised live.
+
+## v0.7.2: finish scheduler fidelity
 
 Remaining correctness items, ordered by how often they cause a wrong answer.
 

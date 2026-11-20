@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/SaiRohithGuntupally/kubectl-why-pending/pkg/diagnose"
 )
 
 func draPendingPod() *corev1.Pod {
@@ -112,5 +115,33 @@ func TestGatherDRA_SkipsWhenNoDRAPods(t *testing.T) {
 	gatherDRA(context.Background(), client, []corev1.Pod{plain})
 	if calls != 0 {
 		t.Fatalf("no DRA pods: expected zero resource.k8s.io calls, got %d", calls)
+	}
+}
+
+// Report 2.6 / scenario 17: a cluster with no DeviceClasses and no
+// ResourceSlices (no DRA driver at all) must still produce the
+// "DeviceClass not found" hint, so empty reads must not come back as nil.
+func TestGatherDRA_EmptyListsAreNotNil(t *testing.T) {
+	p := draPendingPod()
+	client := fake.NewSimpleClientset(p, draClaimFor(p, "missing.example.com"))
+	claims, slices, classes, _, errs := gatherDRA(context.Background(), client, []corev1.Pod{*p})
+	if slices == nil || classes == nil {
+		t.Fatalf("successful empty reads must be non-nil (slices=%v classes=%v)", slices == nil, classes == nil)
+	}
+	if len(errs) != 0 {
+		t.Fatalf("unexpected read errors: %v", errs)
+	}
+	got := diagnose.AnalyzeDRA(p, claims, slices, classes, nil)
+	if len(got) == 0 || !strings.Contains(got[0].Detail, "not found in the cluster") {
+		t.Fatalf("want the missing-DeviceClass hint, got: %+v", got)
+	}
+}
+
+func draClaimFor(p *corev1.Pod, class string) *resourcev1.ResourceClaim {
+	return &resourcev1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: *p.Spec.ResourceClaims[0].ResourceClaimName, Namespace: p.Namespace},
+		Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{
+			{Name: "gpu", Exactly: &resourcev1.ExactDeviceRequest{DeviceClassName: class}},
+		}}},
 	}
 }

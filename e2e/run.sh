@@ -28,6 +28,9 @@ if [[ "${1:-}" != "--check" ]]; then
     ns=$(basename "$f" | cut -d- -f1)
     $K create namespace "$ns" --dry-run=client -o yaml | $K apply -f - >/dev/null
     $K apply -f "$f" >/dev/null
+    if [[ "$f" == *fillers* ]]; then  # must be placed before the pod they squeeze
+      $K -n "$ns" wait --for=condition=Ready pod --all --timeout=120s >/dev/null || echo "warning: $ns fillers not Ready"
+    fi
   done
   echo "waiting 45s for scheduling attempts, events and image pulls..."
   sleep 45
@@ -49,6 +52,7 @@ while IFS=$'\t' read -r ns want_exit want_sub type note; do
   case $ns in
     s05) jq -e '[.[].nodes[]? | select(.schedulable)] | length == 0' $OUT/$ns.json >/dev/null || ok=0 ;;
     w04) grep -qi 'pod affinity' $OUT/$ns.txt && ok=0 ;;
+    s13) jq -e '[.[].causes[] | select(.severity=="blocker" and (.title|test("nodeSelector")))] | length == 0' $OUT/$ns.json >/dev/null && grep -q 'why-pending-e2e-worker3 (dedicated=special:NoSchedule)' $OUT/$ns.txt || ok=0 ;;
     w05) jq -e '[.[].causes[] | select(.severity=="blocker" and (.title|test("PersistentVolumeClaim")))] | length == 0' $OUT/$ns.json >/dev/null || ok=0 ;;
   esac
   if [[ $ok == 1 && $type == works ]]; then r=PASS; ((pass++))
@@ -60,7 +64,7 @@ done < e2e/expected.tsv
 
 # Did the raw scheduler event render anywhere? (audit risk 16)
 ev=$(grep -l '^  scheduler:' $OUT/s0*.txt 2>/dev/null | wc -l | tr -d ' ')
-echo; echo "scheduler event line rendered in $ev/7 working scenarios (risk 16 if 0)"
+echo; echo "scheduler event line rendered in $ev of the s* scenarios (risk 16 if 0)"
 # -A should still surface the image-pull pod (risk 20)
 $BIN --context $CTX -A --no-color > $OUT/all.txt 2>&1
 grep -q bad-image $OUT/all.txt && echo "-A shows w03/bad-image: yes" || echo "-A shows w03/bad-image: NO (risk 20)"

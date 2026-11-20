@@ -5,8 +5,14 @@ s03	1	taints the pod doesn't tolerate	works
 s04	1	PersistentVolumeClaim(s) not found	works
 s05	1	No eligible node provides example.com/widget	works	json nodes[] must have no schedulable:true (risk 11)
 s06	1	anti-affinity unsatisfied	works
-s07	1	Topology spread	works
+s07	1	nodeTaintsPolicy: Honor	works	zone c exists only on tainted worker3
 w01	0	scheduling gate	works	risk 1: gated pod
 w03	0	already scheduled	works	risk 20: Pending on kubelet, not scheduler
 w04	1	larger than any single node	works	risk 3: must NOT also list pod affinity
 w05	1	nodeSelector	works	risk 12: WFFC PVC must not be a Blocker
+s08	1	larger than any single node	works	sidecar summed (live report #15)
+s09	1	ephemeral-storage	works	live report #16
+s10	1	larger than any single node	works	RuntimeClass overhead (live report #19)
+s11	1	fragmentation	works	cross-dimension (live report #21)
+s12	1	not found in the cluster	works	DRA, no driver (live report #17)
+s13	1	carry taints it doesn't tolerate	works	pinned to tainted node names it (live report #4)

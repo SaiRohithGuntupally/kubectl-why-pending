@@ -1,0 +1,9 @@
+# EXPECT: blocker naming ephemeral-storage (no node has 5000Gi of disk).
+apiVersion: v1
+kind: Pod
+metadata: {name: big-scratch, namespace: s09}
+spec:
+  containers:
+    - name: c
+      image: registry.k8s.io/pause:3.10
+      resources: {requests: {ephemeral-storage: 5000Gi}}

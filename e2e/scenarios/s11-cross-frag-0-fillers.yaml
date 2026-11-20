@@ -1,0 +1,14 @@
+# Fillers for s11, applied and waited on before the target pod (run.sh).
+apiVersion: v1
+kind: Pod
+metadata: {name: f-cpu, namespace: s11}
+spec:
+  nodeSelector: {kubernetes.io/hostname: why-pending-e2e-worker}
+  containers: [{name: c, image: registry.k8s.io/pause:3.10, resources: {requests: {cpu: 3500m}}}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: f-mem, namespace: s11}
+spec:
+  nodeSelector: {kubernetes.io/hostname: why-pending-e2e-worker2}
+  containers: [{name: c, image: registry.k8s.io/pause:3.10, resources: {requests: {memory: 6Gi}}}]
