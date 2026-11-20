@@ -1,0 +1,17 @@
+# EXPECT: one replica Pending, blocker "Required pod anti-affinity unsatisfied".
+# 2 eligible hosts (worker3 is tainted) for 3 "one per host" replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: one-per-host, namespace: s06}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: oph}}
+  template:
+    metadata: {labels: {app: oph}}
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: {matchLabels: {app: oph}}
+              topologyKey: kubernetes.io/hostname
+      containers: [{name: c, image: registry.k8s.io/pause:3.10}]

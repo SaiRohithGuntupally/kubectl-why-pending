@@ -1,0 +1,7 @@
+# AUDIT RISK 20. Scheduled fine, stuck on image pull (phase Pending, nodeName set).
+# CORRECT: "already on node X, kubelet problem: ErrImagePull/ImagePullBackOff".
+apiVersion: v1
+kind: Pod
+metadata: {name: bad-image, namespace: w03}
+spec:
+  containers: [{name: c, image: registry.invalid/nope:latest}]

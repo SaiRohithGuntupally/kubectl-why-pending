@@ -1,0 +1,7 @@
+# EXPECT: blocker "taints the pod doesn't tolerate" (pinned to the tainted worker3)
+apiVersion: v1
+kind: Pod
+metadata: {name: taint-blocked, namespace: s03}
+spec:
+  nodeSelector: {e2e/special: "true"}
+  containers: [{name: c, image: registry.k8s.io/pause:3.10}]

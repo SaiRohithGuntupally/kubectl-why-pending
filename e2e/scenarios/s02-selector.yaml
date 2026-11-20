@@ -1,0 +1,7 @@
+# EXPECT: blocker "don't match the pod's nodeSelector"
+apiVersion: v1
+kind: Pod
+metadata: {name: selector-miss, namespace: s02}
+spec:
+  nodeSelector: {disktype: nvme}
+  containers: [{name: c, image: registry.k8s.io/pause:3.10}]

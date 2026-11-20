@@ -1,0 +1,12 @@
+# ns	want_exit	want_substring	type(works|known-bug)	note   (w* rows were v0.6.0 bugs, fixed for v0.7.0)
+s01	1	larger than any single node	works
+s02	1	nodeSelector	works
+s03	1	taints the pod doesn't tolerate	works
+s04	1	PersistentVolumeClaim(s) not found	works
+s05	1	No eligible node provides example.com/widget	works	json nodes[] must have no schedulable:true (risk 11)
+s06	1	anti-affinity unsatisfied	works
+s07	1	Topology spread	works
+w01	0	scheduling gate	works	risk 1: gated pod
+w03	0	already scheduled	works	risk 20: Pending on kubelet, not scheduler
+w04	1	larger than any single node	works	risk 3: must NOT also list pod affinity
+w05	1	nodeSelector	works	risk 12: WFFC PVC must not be a Blocker

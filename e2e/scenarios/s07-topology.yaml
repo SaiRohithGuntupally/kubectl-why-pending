@@ -1,0 +1,19 @@
+# EXPECT: 2 replicas run (zone a, zone b), the 3rd is Pending with blocker
+# "Topology spread constraint can't be satisfied". Zone c exists only on the
+# tainted worker3; default nodeTaintsPolicy=Ignore still counts it as a domain
+# with 0 pods, so globalMin stays 0 and a 2nd pod in a or b would make skew 2.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: spread, namespace: s07}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: spread}}
+  template:
+    metadata: {labels: {app: spread}}
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector: {matchLabels: {app: spread}}
+      containers: [{name: c, image: registry.k8s.io/pause:3.10}]

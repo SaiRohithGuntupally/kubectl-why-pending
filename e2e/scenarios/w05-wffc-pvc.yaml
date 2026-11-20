@@ -1,0 +1,17 @@
+# AUDIT RISK 12. kind's default StorageClass (standard, local-path) is
+# WaitForFirstConsumer, so the PVC is Pending by design. Real blocker: nodeSelector.
+# CORRECT: nodeSelector blocker; PVC as Info, not Blocker.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data, namespace: w05}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: wffc, namespace: w05}
+spec:
+  nodeSelector: {disktype: nvme}
+  containers: [{name: c, image: registry.k8s.io/pause:3.10, volumeMounts: [{name: d, mountPath: /d}]}]
+  volumes: [{name: d, persistentVolumeClaim: {claimName: data}}]

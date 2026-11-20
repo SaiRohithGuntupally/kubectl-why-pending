@@ -1,0 +1,16 @@
+# AUDIT RISK 3. Too big (the real blocker) + required pod affinity matching only
+# itself. The scheduler's self-match exception means affinity is NOT a blocker.
+# CORRECT: only "larger than any single node".
+apiVersion: v1
+kind: Pod
+metadata: {name: self-aff, namespace: w04, labels: {app: selfaff}}
+spec:
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector: {matchLabels: {app: selfaff}}
+          topologyKey: kubernetes.io/hostname
+  containers:
+    - name: c
+      image: registry.k8s.io/pause:3.10
+      resources: {requests: {cpu: "200"}}

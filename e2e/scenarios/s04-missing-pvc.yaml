@@ -1,0 +1,7 @@
+# EXPECT: blocker "PersistentVolumeClaim(s) not found"
+apiVersion: v1
+kind: Pod
+metadata: {name: missing-pvc, namespace: s04}
+spec:
+  containers: [{name: c, image: registry.k8s.io/pause:3.10, volumeMounts: [{name: d, mountPath: /d}]}]
+  volumes: [{name: d, persistentVolumeClaim: {claimName: does-not-exist}}]

@@ -1,0 +1,8 @@
+# AUDIT RISK 1 (confident-wrong). Gated pod that would otherwise fit.
+# CORRECT: "held by scheduling gate example.com/hold, not a scheduler problem".
+apiVersion: v1
+kind: Pod
+metadata: {name: gated, namespace: w01}
+spec:
+  schedulingGates: [{name: example.com/hold}]
+  containers: [{name: c, image: registry.k8s.io/pause:3.10}]

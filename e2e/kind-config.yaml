@@ -1,0 +1,12 @@
+# 1 control-plane + 3 workers. run.sh adds labels/taints after creation so the
+# layout is explicit in one place:
+#   worker  zone=a
+#   worker2 zone=b
+#   worker3 zone=c, label e2e/special=true, tainted dedicated=special:NoSchedule
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker
