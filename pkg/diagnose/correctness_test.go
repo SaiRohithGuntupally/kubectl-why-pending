@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -390,4 +391,61 @@ func (r Result) HasBlockerCauses() []Cause {
 		}
 	}
 	return out
+}
+
+// Retest #2: replicas sharing one anti-affinity rule get ONE blocker, not the
+// own-term blocker plus a "symmetric" duplicate.
+func TestSharedAntiAffinityReportedOnce(t *testing.T) {
+	term := corev1.PodAffinityTerm{
+		TopologyKey:   "kubernetes.io/hostname",
+		LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "oph"}},
+	}
+	p := appPod("oph")
+	p.Spec.Affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+		RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{term},
+	}}
+	var nodes []NodeView
+	var placed []PlacedPod
+	for _, n := range []string{"w-1", "w-2"} {
+		nodes = append(nodes, NodeView{Node: readyNode(n, "8", "16Gi")})
+		placed = append(placed, PlacedPod{Namespace: "default", Name: "oph-" + n, NodeName: n,
+			Labels: map[string]string{"app": "oph"}, RequiredAntiAffinity: []corev1.PodAffinityTerm{term}})
+	}
+	r := Analyze(Input{Pod: p, Nodes: nodes, ClusterPods: placed})
+	if n := len(r.HasBlockerCauses()); n != 1 {
+		t.Fatalf("want exactly one anti-affinity blocker, got %d: %s", n, titles(r))
+	}
+}
+
+// Retest open item: never tell users to untaint control-plane/etcd nodes.
+func TestControlPlaneTaintAdviceKeepsTaint(t *testing.T) {
+	p := pod("1m", "8Mi")
+	p.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "cp-1"}
+	r := Analyze(Input{Pod: p, Nodes: judgeCluster()})
+	fix := r.Causes[0].Fix
+	if strings.Contains(fix, "kubectl taint nodes") || !strings.Contains(fix, "keep them") {
+		t.Fatalf("control-plane taint advice should keep the taint, got: %q", fix)
+	}
+}
+
+// Retest open item: missing DeviceClass is named in the title.
+func TestDRAMissingClassTitle(t *testing.T) {
+	p := draPod("job-0", "ml", "gpu", "gpu-claim")
+	claims := []resourcev1.ResourceClaim{draClaim("ml", "gpu-claim", "fake.example.com", false)}
+	c := AnalyzeDRA(p, claims, []resourcev1.ResourceSlice{}, []resourcev1.DeviceClass{}, nil)
+	if len(c) != 1 || !strings.Contains(c[0].Title, "fake.example.com, which doesn't exist") {
+		t.Fatalf("title should name the missing class: %+v", c)
+	}
+}
+
+// Retest #1: an unreadable StorageClass is a Warning, never a Blocker.
+func TestUnknownPVCBindingIsWarning(t *testing.T) {
+	r := Analyze(Input{
+		Pod:         pod("100m", "64Mi"),
+		Nodes:       []NodeView{{Node: readyNode("n1", "4", "8Gi")}},
+		UnknownPVCs: []string{`data (couldn't read StorageClass "local-path": forbidden)`},
+	})
+	if r.HasBlocker() || !hasCause(r, "couldn't read the StorageClass") {
+		t.Fatalf("want a warning, not a blocker: %s", titles(r))
+	}
 }

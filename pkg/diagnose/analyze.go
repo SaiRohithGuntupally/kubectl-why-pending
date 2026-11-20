@@ -79,6 +79,7 @@ type Input struct {
 	SchedulerEvent string       // latest FailedScheduling message, if any
 	UnboundPVCs    []string     // referenced PVCs that exist but are not Bound (Immediate binding)
 	WaitingPVCs    []string     // unbound PVCs whose StorageClass is WaitForFirstConsumer (normal)
+	UnknownPVCs    []string     // unbound PVCs whose StorageClass couldn't be read: "name (error)"
 	MissingPVCs    []string     // referenced PVCs that don't exist at all
 	Chain          *ChainStatus // GPU enablement-chain status (nil if not analyzed)
 
@@ -161,6 +162,15 @@ func Analyze(in Input) Result {
 			Title:    "Unbound PersistentVolumeClaim(s)",
 			Detail:   fmt.Sprintf("The pod mounts PVC(s) that are not Bound: %s.", strings.Join(in.UnboundPVCs, ", ")),
 			Fix:      "Check the PVC and its StorageClass. On-prem, this usually means no PersistentVolume satisfies the claim (no dynamic provisioner, or no matching static PV).",
+		})
+	}
+
+	if len(in.UnknownPVCs) > 0 {
+		res.Causes = append(res.Causes, Cause{
+			Severity: Warning,
+			Title:    "Unbound PVC(s); couldn't read the StorageClass to tell if that's expected",
+			Detail:   "Not Bound: " + strings.Join(in.UnknownPVCs, "; ") + ".\nIf the class is WaitForFirstConsumer this is normal until the pod schedules; if it is Immediate, nothing has provisioned a volume and the pod can't start.",
+			Fix:      "Check `kubectl get storageclass` (volumeBindingMode) and `kubectl describe pvc`, or grant get/list on storageclasses.storage.k8s.io.",
 		})
 	}
 
@@ -324,7 +334,7 @@ func Analyze(in Input) Result {
 			Severity: severityIf(eligible == 0, Blocker, Warning),
 			Title:    title,
 			Detail:   detail,
-			Fix:      "Add a matching toleration to the pod spec, or remove the taint with `kubectl taint nodes <node> <key>-` if the node should accept workloads.",
+			Fix:      taintFix(taintSet),
 		})
 	}
 
@@ -490,7 +500,7 @@ func Analyze(in Input) Result {
 			res.Causes = append(res.Causes, Cause{
 				Severity: Info,
 				Title:    fmt.Sprintf("%d node(s) look like they should fit", fit),
-				Detail:   "None of the checks this tool models found a blocker. The cause is likely something not modelled yet (hostPort conflicts, volume topology or attach limits, maxPods, DRA device selectors) or dynamic (priority/preemption, or the pod was only just created and the scheduler hasn't retried since the cluster changed).",
+				Detail:   "None of the checks this tool models found a blocker. The cause is likely something not modelled yet (hostPort conflicts, volume topology or attach limits, DRA device selectors) or dynamic (priority/preemption, or the pod was only just created and the scheduler hasn't retried since the cluster changed).",
 				Fix:      "Read the scheduler event below; it is the scheduler's own verdict from its last attempt.",
 			})
 		} else {
@@ -518,6 +528,42 @@ func Analyze(in Input) Result {
 
 	sortCauses(res.Causes)
 	return res
+}
+
+// controlPlaneTaint reports taints that mark control-plane / etcd nodes. Telling
+// users to remove these (RKE2, kubeadm, k3s, Talos) is bad advice.
+func controlPlaneTaint(key string) bool {
+	switch key {
+	case "node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master",
+		"node-role.kubernetes.io/etcd", "node-role.kubernetes.io/controlplane",
+		"CriticalAddonsOnly":
+		return true
+	}
+	return false
+}
+
+// taintFix picks advice by taint kind: control-plane/etcd taints get "tolerate
+// or use a worker", others may reasonably be removed.
+func taintFix(taintSet map[string]bool) string {
+	cp, other := false, false
+	for t := range taintSet {
+		key := t
+		if i := strings.IndexAny(t, "=:"); i >= 0 {
+			key = t[:i]
+		}
+		if controlPlaneTaint(key) {
+			cp = true
+		} else {
+			other = true
+		}
+	}
+	switch {
+	case cp && !other:
+		return "These are control-plane/etcd taints: keep them. Schedule on a worker (add or free one), or add a toleration only if this pod really belongs on control-plane nodes."
+	case cp && other:
+		return "Keep the control-plane/etcd taints; for the others, add a matching toleration or remove the taint with `kubectl taint nodes <node> <key>-` if the node should accept workloads."
+	}
+	return "Add a matching toleration to the pod spec, or remove the taint with `kubectl taint nodes <node> <key>-` if the node should accept workloads."
 }
 
 func sortCauses(c []Cause) {

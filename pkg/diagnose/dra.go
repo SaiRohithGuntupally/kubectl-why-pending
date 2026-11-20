@@ -117,6 +117,7 @@ func unallocatedClaimCause(name string, claim *resourcev1.ResourceClaim, slices 
 		if len(missing) > 0 {
 			detail += fmt.Sprintf(" DeviceClass(es) not found in the cluster: %s — the request can never be satisfied.", strings.Join(missing, ", "))
 			fix = fmt.Sprintf("Create the missing DeviceClass(es) (%s) or reference an existing one in the claim's request.", strings.Join(missing, ", "))
+			title = fmt.Sprintf("ResourceClaim %q requests DeviceClass %s, which doesn't exist", name, strings.Join(missing, ", "))
 			return Cause{Severity: Blocker, Title: title, Detail: detail, Fix: fix}
 		}
 	}

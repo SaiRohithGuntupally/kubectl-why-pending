@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // Audit risk 16: events recorded via events.k8s.io have a zero lastTimestamp;
@@ -84,7 +90,7 @@ func TestUnboundPVCs_BindingModes(t *testing.T) {
 		sc("local-path", wffc, true), sc("nfs", imm, false),
 		pvc("local-data", str("local-path")), pvc("default-data", nil), pvc("nfs-data", str("nfs")),
 	)
-	missing, unbound, waiting, _ := unboundPVCs(context.Background(), client, p, map[string]storagev1.VolumeBindingMode{})
+	missing, unbound, waiting, _, _ := unboundPVCs(context.Background(), client, p, map[string]storagev1.VolumeBindingMode{})
 	if len(missing) != 1 || missing[0] != "gone" {
 		t.Errorf("missing = %v, want [gone] (ephemeral PVC not yet created is not missing)", missing)
 	}
@@ -114,3 +120,23 @@ func TestPendingPods_KeepsBoundPendingPods(t *testing.T) {
 }
 
 func typesUID(s string) types.UID { return types.UID(s) }
+
+// Retest #1: StorageClass unreadable (RBAC) -> "unknown", never "unbound".
+func TestUnboundPVCs_StorageClassForbidden(t *testing.T) {
+	str := func(s string) *string { return &s }
+	client := fake.NewSimpleClientset(&corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: "default"},
+		Spec:       corev1.PersistentVolumeClaimSpec{StorageClassName: str("local-path")},
+		Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending},
+	})
+	client.PrependReactor("get", "storageclasses", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "storage.k8s.io", Resource: "storageclasses"}, "local-path", errors.New("no RBAC"))
+	})
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"}, Spec: corev1.PodSpec{Volumes: []corev1.Volume{
+		{Name: "d", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data"}}},
+	}}}
+	_, unbound, waiting, unknown, _ := unboundPVCs(context.Background(), client, p, map[string]storagev1.VolumeBindingMode{})
+	if len(unbound) != 0 || len(waiting) != 0 || len(unknown) != 1 || !strings.Contains(unknown[0], "forbidden") {
+		t.Fatalf("unbound=%v waiting=%v unknown=%v", unbound, waiting, unknown)
+	}
+}

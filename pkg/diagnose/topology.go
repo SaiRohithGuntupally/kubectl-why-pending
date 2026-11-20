@@ -2,6 +2,7 @@ package diagnose
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -359,6 +360,9 @@ func podAffinity(pod *corev1.Pod, allNodes, eligible []*corev1.Node, placed []Pl
 	blockedBy := map[string]string{} // node -> existing pod's term key
 	for _, p := range placed {
 		for _, t := range p.RequiredAntiAffinity {
+			if sameTermAsOwn(t, anti) {
+				continue // replicas sharing one rule: already reported above
+			}
 			ns := map[string]bool{p.Namespace: true}
 			all := false
 			if t.NamespaceSelector != nil {
@@ -402,6 +406,19 @@ func podAffinity(pod *corev1.Pod, allNodes, eligible []*corev1.Node, placed []Pl
 		})
 	}
 	return causes, reasons
+}
+
+// sameTermAsOwn reports whether an existing pod's anti-affinity term is the
+// same rule the incoming pod carries (typical for replicas of one workload),
+// so the symmetric check doesn't report it a second time.
+func sameTermAsOwn(t corev1.PodAffinityTerm, own []corev1.PodAffinityTerm) bool {
+	for _, o := range own {
+		if o.TopologyKey == t.TopologyKey && reflect.DeepEqual(o.LabelSelector, t.LabelSelector) &&
+			reflect.DeepEqual(o.Namespaces, t.Namespaces) && reflect.DeepEqual(o.NamespaceSelector, t.NamespaceSelector) {
+			return true
+		}
+	}
+	return false
 }
 
 // setReason records the first reason a node is rejected (later analyses don't

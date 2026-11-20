@@ -166,7 +166,14 @@ kubectl why-pending -n data my-pod      # in a namespace
 kubectl why-pending -A                  # all namespaces
 kubectl why-pending --no-color          # plain output for logs/CI
 kubectl why-pending -o json             # machine-readable (also: -o yaml)
+kubectl why-pending --version
 ```
+
+All the standard kubectl connection flags work, in either `--flag value` or
+`--flag=value` form: `--context`, `--kubeconfig`, `--as` / `--as-group`
+(debug what a user or service account can see), `--token`, `--server`,
+`--request-timeout`, `--insecure-skip-tls-verify`. `--timeout` (default 60s)
+bounds the whole run; raise it for `-A` on very large clusters.
 
 ## Machine-readable output
 

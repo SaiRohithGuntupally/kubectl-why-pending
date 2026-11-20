@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -16,65 +17,37 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/pager"
 
 	"github.com/SaiRohithGuntupally/kubectl-why-pending/pkg/diagnose"
 )
 
-const usage = `kubectl why-pending — explain why pods are stuck Pending
-
-USAGE:
-  kubectl why-pending [pod] [flags]
-
-  With no pod name, diagnoses every Pending pod in the namespace.
-
-FLAGS:
-  -n, --namespace <ns>     namespace (default: current context namespace)
-  -A, --all-namespaces     scan Pending pods in all namespaces
-  -o, --output <format>    output format: text (default), json, or yaml
-      --context <name>     kubeconfig context to use
-      --kubeconfig <path>  path to kubeconfig
-      --no-color           disable colored output
-      --version            print the version and exit
-  -h, --help               show this help
-
-EXIT CODES:
-  0  no blocking cause found (or no Pending pods)
-  1  at least one Pending pod has a blocking cause
-  2  usage error
-  3  runtime error (e.g. could not reach the cluster)
-`
-
 // version is stamped at release time: -ldflags "-X main.version=v0.7.0".
 var version = "dev"
 
 type options struct {
-	namespace     string
+	namespace     string // resolved: -n, else the kubeconfig context's namespace
 	allNamespaces bool
-	context       string
-	kubeconfig    string
 	podName       string
 	noColor       bool
-	output        string // "", "text", "json", "yaml"
+	output        string        // "", "text", "json", "yaml"
+	timeout       time.Duration // whole-run deadline (0 in tests = default)
+	flags         *genericclioptions.ConfigFlags
 }
 
 func main() {
-	opts, err := parseArgs(os.Args[1:])
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		fmt.Fprint(os.Stderr, "\n"+usage)
-		os.Exit(2)
-	}
-	switch opts.output {
-	case "", "text", "json", "yaml":
-	default:
-		fmt.Fprintf(os.Stderr, "error: invalid --output %q (want text, json, or yaml)\n", opts.output)
+	opts, err := parseArgs(os.Args[1:], os.Stdout)
+	switch {
+	case errors.Is(err, errHelp), errors.Is(err, errVersion):
+		os.Exit(0)
+	case err != nil:
+		printUsageError(err)
 		os.Exit(2)
 	}
 
-	client, defaultNS, err := newClient(opts)
+	client, defaultNS, err := newClient(opts.flags)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: could not connect to cluster:", err)
 		os.Exit(3)
@@ -85,6 +58,9 @@ func main() {
 
 	blockers, err := run(client, opts)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("%w (raise --timeout, currently %s)", err, opts.timeout)
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(3)
 	}
@@ -95,7 +71,11 @@ func main() {
 
 // run diagnoses the pending pods and returns whether any has a blocking cause.
 func run(client kubernetes.Interface, opts options) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	timeout := opts.timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	pending, err := pendingPods(ctx, client, opts)
@@ -128,9 +108,9 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 	results := make([]diagnose.Result, 0, len(pending))
 	for i := range pending {
 		p := &pending[i]
-		var missing, unbound, waiting, readErrs []string
+		var missing, unbound, waiting, unknownPVCs, readErrs []string
 		if p.Spec.NodeName == "" {
-			missing, unbound, waiting, readErrs = unboundPVCs(ctx, client, p, classModes)
+			missing, unbound, waiting, unknownPVCs, readErrs = unboundPVCs(ctx, client, p, classModes)
 		}
 		event, err := latestSchedulerEvent(ctx, client, p)
 		if err != nil {
@@ -145,6 +125,7 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 			MissingPVCs:    missing,
 			UnboundPVCs:    unbound,
 			WaitingPVCs:    waiting,
+			UnknownPVCs:    unknownPVCs,
 			DRAClaimsError: draClaimErrs[p.Namespace],
 			Chain:          &chain,
 			DRAClaims:      draClaims,
@@ -176,25 +157,19 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 	return blockers, nil
 }
 
-func newClient(opts options) (kubernetes.Interface, string, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if opts.kubeconfig != "" {
-		rules.ExplicitPath = opts.kubeconfig
-	}
-	overrides := &clientcmd.ConfigOverrides{}
-	if opts.context != "" {
-		overrides.CurrentContext = opts.context
-	}
-	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides)
-
-	ns, _, _ := cc.Namespace()
-	if ns == "" {
+// newClient builds the clientset from the standard kubectl flags (kubeconfig,
+// context, impersonation, token, server, request timeout, TLS) and returns the
+// context's namespace as the default.
+func newClient(flags *genericclioptions.ConfigFlags) (kubernetes.Interface, string, error) {
+	ns, _, err := flags.ToRawKubeConfigLoader().Namespace()
+	if err != nil || ns == "" {
 		ns = "default"
 	}
-	cfg, err := cc.ClientConfig()
+	cfg, err := flags.ToRESTConfig()
 	if err != nil {
 		return nil, "", err
 	}
+	cfg.UserAgent = "kubectl-why-pending/" + version
 	cs, err := kubernetes.NewForConfig(cfg)
 	return cs, ns, err
 }
@@ -462,7 +437,7 @@ func eventTime(e *corev1.Event) time.Time {
 // generated "<pod>-<volume>" PVCs): missing, unbound with Immediate binding (a
 // real blocker), or waiting on a WaitForFirstConsumer StorageClass (normal until
 // the pod is scheduled). classModes caches StorageClass lookups across pods.
-func unboundPVCs(ctx context.Context, client kubernetes.Interface, p *corev1.Pod, classModes map[string]storagev1.VolumeBindingMode) (missing, unbound, waiting, readErrs []string) {
+func unboundPVCs(ctx context.Context, client kubernetes.Interface, p *corev1.Pod, classModes map[string]storagev1.VolumeBindingMode) (missing, unbound, waiting, unknown, readErrs []string) {
 	for _, v := range p.Spec.Volumes {
 		var name string
 		ephemeral := false
@@ -485,10 +460,16 @@ func unboundPVCs(ctx context.Context, client kubernetes.Interface, p *corev1.Pod
 			// RBAC or transient: report it, never mislabel it as missing.
 			readErrs = append(readErrs, fmt.Sprintf("PVC %s: %v", name, err))
 		case pvc.Status.Phase == corev1.ClaimBound:
-		case bindingMode(ctx, client, pvc, classModes) == storagev1.VolumeBindingWaitForFirstConsumer:
-			waiting = append(waiting, name)
 		default:
-			unbound = append(unbound, name)
+			mode, err := bindingMode(ctx, client, pvc, classModes)
+			switch {
+			case err != nil:
+				unknown = append(unknown, fmt.Sprintf("%s (%v)", name, err))
+			case mode == storagev1.VolumeBindingWaitForFirstConsumer:
+				waiting = append(waiting, name)
+			default:
+				unbound = append(unbound, name)
+			}
 		}
 	}
 	return
@@ -497,7 +478,10 @@ func unboundPVCs(ctx context.Context, client kubernetes.Interface, p *corev1.Pod
 // bindingMode returns the PVC's StorageClass volumeBindingMode, resolving the
 // cluster default class when storageClassName is unset. Unknown → Immediate,
 // which keeps the old (Blocker) behaviour.
-func bindingMode(ctx context.Context, client kubernetes.Interface, pvc *corev1.PersistentVolumeClaim, cache map[string]storagev1.VolumeBindingMode) storagev1.VolumeBindingMode {
+// bindingMode returns the PVC's StorageClass volumeBindingMode, or an error
+// when the StorageClass couldn't be read (RBAC). A missing class is Immediate:
+// nothing will ever provision it, which is a real blocker.
+func bindingMode(ctx context.Context, client kubernetes.Interface, pvc *corev1.PersistentVolumeClaim, cache map[string]storagev1.VolumeBindingMode) (storagev1.VolumeBindingMode, error) {
 	var class string
 	switch {
 	case pvc.Spec.StorageClassName != nil:
@@ -506,25 +490,35 @@ func bindingMode(ctx context.Context, client kubernetes.Interface, pvc *corev1.P
 		class = "\x00default"
 	}
 	if class == "" {
-		return storagev1.VolumeBindingImmediate // static binding, no class
+		return storagev1.VolumeBindingImmediate, nil // static binding, no class
 	}
 	if m, ok := cache[class]; ok {
-		return m
+		return m, nil
 	}
 	mode := storagev1.VolumeBindingImmediate
 	if class == "\x00default" {
-		if list, err := client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{}); err == nil {
-			for i := range list.Items {
-				sc := &list.Items[i]
-				if sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" && sc.VolumeBindingMode != nil {
-					mode = *sc.VolumeBindingMode
-					break
-				}
+		list, err := client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("couldn't list StorageClasses to find the default: %w", err)
+		}
+		for i := range list.Items {
+			sc := &list.Items[i]
+			if sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" && sc.VolumeBindingMode != nil {
+				mode = *sc.VolumeBindingMode
+				break
 			}
 		}
-	} else if sc, err := client.StorageV1().StorageClasses().Get(ctx, class, metav1.GetOptions{}); err == nil && sc.VolumeBindingMode != nil {
-		mode = *sc.VolumeBindingMode
+	} else {
+		sc, err := client.StorageV1().StorageClasses().Get(ctx, class, metav1.GetOptions{})
+		switch {
+		case apierrors.IsNotFound(err):
+			// No such class: nothing provisions it, so Immediate (blocker) is right.
+		case err != nil:
+			return "", fmt.Errorf("couldn't read StorageClass %q: %w", class, err)
+		case sc.VolumeBindingMode != nil:
+			mode = *sc.VolumeBindingMode
+		}
 	}
 	cache[class] = mode
-	return mode
+	return mode, nil
 }

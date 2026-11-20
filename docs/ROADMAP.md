@@ -5,7 +5,9 @@ Living plan. Last updated 2026-11-20. Inputs: the September research pass in
 to `audit-2026-09.md`), an external code review received 2026-11-20
 ("review #N" below), and a live judge run of v0.6.0 on a 6-node RKE2 1.35
 cluster (3 etcd-tainted control-plane nodes, 3 workers; 21 scenarios: 12
-right, 3 partial, 6 wrong; "live #N" below).
+right, 3 partial, 6 wrong; "live #N" below). A retest of v0.7.1 on the same
+cluster confirmed every reproducible live bug fixed and found 2 minor new ones
+("retest #N").
 
 Guiding rule: **a confident wrong answer is worse than no answer.** Correctness
 work comes before features, and anything not modelled is said out loud.
@@ -16,9 +18,10 @@ work comes before features, and anything not modelled is said out loud.
 |---|---|---|
 | v0.6.0 | DRA device taints (k8s 1.37) | Released 2026-09-09 |
 | v0.7.0 | Stop the confident wrong answers | Released 2026-11-20 (krew-index #6712) |
-| v0.7.1 | Live-judge fixes | Code done, unreleased |
-| v0.7.2 | Cross-check with the scheduler, finish fidelity | Next |
-| v0.8.0 | Usability: kubectl-standard CLI, readable output | Planned |
+| v0.7.1 | Live-judge fixes | Released 2026-11-20 (krew-index #6713), retest passed |
+| v0.7.2 | Retest fixes + kubectl-standard flags | Code done, unreleased |
+| v0.7.3 | Cross-check with the scheduler, finish fidelity | Next |
+| v0.8.0 | Usability: readable output, real fix commands | Planned |
 | v0.9.0 | Explain more than one stuck pod; deeper GPU/DRA | Planned |
 | v1.0.0 | Stable JSON contract + agent surface | Planned |
 
@@ -99,7 +102,30 @@ Done (2026-11-20), everything v0.7.0 still got wrong in the live run:
 Still open from the live report: exit code for "Pending, cause unknown"
 (v0.8.0 item 6), max-pods / NotReady / preemption not exercised live.
 
-## v0.7.2: finish scheduler fidelity
+## v0.7.2: retest fixes
+
+Done (2026-11-20):
+
+- [x] Unreadable StorageClass (no `storage.k8s.io` RBAC) made a WFFC PVC an
+      "Unbound" Blocker. Now a Warning saying the binding mode is unknown; a
+      StorageClass that doesn't exist is still a Blocker. Retest #1.
+- [x] Replicas sharing one required anti-affinity rule produced two blockers
+      (own rule + "existing pods' anti-affinity"). The symmetric check skips
+      rules identical to the pod's own. Retest #2.
+- [x] Control-plane / etcd / master / CriticalAddonsOnly taints get "keep the
+      taint; use a worker or tolerate", never `kubectl taint nodes ... -`.
+- [x] Missing DeviceClass named in the cause title.
+- [x] Fallback text no longer lists maxPods as unmodelled (it is since v0.7.0).
+- [x] **kubectl-standard CLI** (pulled forward from v0.8.0; flagged by every
+      review): pflag + `genericclioptions.ConfigFlags`, so `--flag=value`,
+      `-n=ns`, `-ojson`, `--as` / `--as-group`, `--token`, `--server`,
+      `--request-timeout`, `--insecure-skip-tls-verify`, `--cluster` / `--user`
+      all work. The hard-coded 30s deadline is now `--timeout` (default 60s).
+      Release binary +5% (27.9 to 29.3 MB, 9.8 MB gzipped).
+
+Retest timing: `-A` across the 6-node cluster in 3.6s.
+
+## v0.7.3: finish scheduler fidelity
 
 Remaining correctness items, ordered by how often they cause a wrong answer.
 
@@ -146,10 +172,8 @@ Exit criterion: each item lands with an e2e scenario in `e2e/scenarios/`
 
 ## v0.8.0: usability
 
-1. **kubectl-standard CLI**: adopt `genericclioptions.ConfigFlags` (gets
-   `--flag=value`, `--as`, `--server`, `--token`, `--request-timeout`, `-v`,
-   auth plugins). Replace the fixed 30s deadline with `--timeout` (default 60s)
-   and print partial results on timeout instead of exit 3.
+1. ~~kubectl-standard CLI~~ done in v0.7.2. Left: print partial results when
+   `--timeout` hits instead of exit 3.
 2. ~~`--version`~~ done in v0.7.0. Add commit and build date to it, and print
    it in the misdiagnosis issue template.
 3. **Per-node table in text output** (`--nodes`, automatic at 20 nodes or fewer),
