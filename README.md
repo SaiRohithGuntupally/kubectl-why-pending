@@ -54,14 +54,32 @@ Every Kubernetes user eventually stares at a `Pending` pod and a wall of
 where the most common real cause is **fragmentation** (you have the capacity, just
 not on one node) and there's no autoscaler to bail you out.
 
-`kubectl-why-pending` re-runs the scheduler's filtering logic locally and explains
-the result like a teammate would.
+`kubectl-why-pending` re-checks the scheduler's main filters locally against live
+cluster state and explains the result like a teammate would. It models the
+common filters (see [What it doesn't model yet](#what-it-doesnt-model-yet)); the
+scheduler's own last message is always shown alongside for comparison.
 
 ## What it detects
+
+First, the Pending pods that aren't a scheduling problem at all, so it never
+invents a capacity blocker for them:
+
+- **Already scheduled, stuck on the node** (image pull, volume mount, sandbox):
+  says so and shows the container's waiting reason.
+- **Held by a scheduling gate** (Kueue, Volcano, custom controllers): names the
+  gate and the controller that set it; the scheduler hasn't looked yet.
+- **Preemption in progress** (`nominatedNodeName` set): findings are shown as
+  warnings, because the scheduler is already acting.
+
+Then the real scheduling causes:
 
 - **Resource fragmentation** — enough total CPU/memory, but not on any single node.
 - **Pod larger than any node** — defrag can't help; the request or the hardware is the problem.
 - **Insufficient free capacity** — not enough room now, even in aggregate.
+  Requests are counted like the scheduler does: sidecar containers added to the
+  total, RuntimeClass `overhead` included.
+- **Ephemeral-storage and max-pods** — nodes whose root disk or pod-count limit
+  (kubelet `maxPods`, 110 by default) is used up, even with CPU and memory free.
 - **Untolerated taints** — including the classic control-plane taint on small clusters.
 - **nodeSelector / required nodeAffinity** mismatches.
 - **Extended resources** (`nvidia.com/gpu`, hugepages, custom device-plugin
@@ -78,14 +96,41 @@ the result like a teammate would.
   names the taint and where it came from (the driver's ResourceSlice or a
   `DeviceTaintRule`), kept separate from ordinary node taints. Partial cases
   say how many devices were really candidates.
-- **Pod topology spread** (`DoNotSchedule`) — computes the real skew across all
-  domains and tells you which under-filled zone/host needs a node.
+- **Pod topology spread** (`DoNotSchedule`) — computes the skew per domain with
+  the scheduler's default node inclusion (nodes the pod can't select aren't
+  domains, terminating pods don't count) and tells you which under-filled
+  zone/host needs a node.
 - **Inter-pod affinity / anti-affinity** (required) — including the classic
-  "one replica per host" that runs out of hosts.
-- **Cordoned / NotReady nodes** removed from scheduling.
-- **Unbound PersistentVolumeClaims** (with the WaitForFirstConsumer caveat).
+  "one replica per host" that runs out of hosts, the first-replica self-match
+  exception, and existing pods' anti-affinity against this pod.
+- **Cordoned / NotReady nodes** removed from scheduling (unless the pod
+  tolerates the `unschedulable` / `not-ready` taints, like DaemonSet pods).
+- **Missing or unbound PersistentVolumeClaims.** A claim on a
+  `WaitForFirstConsumer` StorageClass is reported as expected, not as a blocker.
+- **Failed reads are reported**, never silent: a forbidden PVC or event read
+  shows up as a warning instead of a wrong conclusion.
 - Falls back to the raw scheduler event + dynamic-cause hints (priority/preemption)
   when no static blocker is found.
+
+## What it doesn't model yet
+
+It's a static re-check, not the scheduler itself, so some filters are missing.
+When one of these is the cause, the tool says it found no static blocker and
+shows the scheduler's own event:
+
+- hostPort conflicts, CSI volume attach limits
+- PersistentVolume node affinity / volume zones (local-path, OpenEBS, TopoLVM)
+- pod-level `spec.resources`
+- topology spread `minDomains` / `matchLabelKeys`, affinity `namespaceSelector`
+  with labels
+- DRA device selectors, counts and per-node device placement
+
+## Permissions
+
+It reads cluster-wide: `list` on nodes and pods in all namespaces (for
+free-capacity math), plus `get`/`list` on events, PVCs and StorageClasses, and
+on `resource.k8s.io` objects for DRA pods. Without cluster-wide pod/node access
+it exits 3 with the API error.
 
 ## Install
 
@@ -104,6 +149,8 @@ kubectl why-pending --help
 ```sh
 make build
 make install   # copies the binary onto your PATH as kubectl-why_pending
+# or: go install github.com/SaiRohithGuntupally/kubectl-why-pending@latest
+#     (installs as kubectl-why-pending; rename to kubectl-why_pending for kubectl)
 kubectl why-pending --help
 ```
 
@@ -159,13 +206,17 @@ whole pipeline against a fake API.
 
 ## Roadmap
 
-- `--watch` mode.
-- A Prometheus exporter that emits the diagnosed reason as a metric label
-  (kube-state-metrics only exposes *that* a pod is unschedulable, not *why*).
-- Topology spread refinements (minDomains, nodeAffinityPolicy, matchLabelKeys).
-- Pod priority / preemption awareness.
-- Pro tier (planned): a fleet daemon that watches every cluster and alerts on
-  Pending pods before anyone files a ticket.
+Full plan in [docs/ROADMAP.md](docs/ROADMAP.md). In short:
+
+- **v0.7.x:** finish scheduler fidelity: pod overhead and sidecars, PersistentVolume
+  node affinity (local-path / OpenEBS / TopoLVM), scheduler-identical taint and
+  affinity matching.
+- **v0.8.0:** standard kubectl flags (`--as`, `--request-timeout`), `version`,
+  a per-node table in text output, group-by-cause for `-A`, fix commands with
+  real node names.
+- **v0.9.0:** explain Deployments with zero pods, hostPort and volume-limit
+  conflicts, deeper GPU and DRA diagnosis, `--watch`.
+- **v1.0.0:** a versioned JSON schema and an MCP / agent-skill interface.
 
 ## License
 
