@@ -32,8 +32,8 @@ if [[ "${1:-}" != "--check" ]]; then
       $K -n "$ns" wait --for=condition=Ready pod --all --timeout=120s >/dev/null || echo "warning: $ns fillers not Ready"
     fi
   done
-  echo "waiting 45s for scheduling attempts, events and image pulls..."
-  sleep 45
+  echo "waiting 75s for scheduling attempts, events and image pulls (s16 needs >60s)..."
+  sleep 75
 fi
 
 mkdir -p $OUT

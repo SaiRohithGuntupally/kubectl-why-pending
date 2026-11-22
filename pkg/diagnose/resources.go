@@ -67,10 +67,39 @@ func newResources() Resources { return Resources{Extended: map[string]int64{}} }
 //     before it, and the pod needs the max of those;
 //   - sidecars keep running, so they are also added to the regular total;
 //   - spec.overhead (RuntimeClass, e.g. Kata/gVisor) is added on top.
+//   - a container's request is the larger of its spec and the resources the
+//     kubelet allocated (in-place resize, GA 1.35: while a resize is pending the
+//     scheduler reserves the larger of the two);
+//   - pod-level spec.resources (beta, on by default since 1.34), when set,
+//     replaces the container sum for cpu and memory.
 func PodRequests(pod *corev1.Pod) Resources {
+	allocated := map[string]corev1.ResourceList{}
+	for _, cs := range pod.Status.ContainerStatuses {
+		allocated[cs.Name] = cs.AllocatedResources
+	}
+	for _, cs := range pod.Status.InitContainerStatuses {
+		allocated[cs.Name] = cs.AllocatedResources
+	}
+	req := func(c *corev1.Container) corev1.ResourceList {
+		a := allocated[c.Name]
+		if len(a) == 0 {
+			return c.Resources.Requests
+		}
+		out := corev1.ResourceList{}
+		for k, v := range c.Resources.Requests {
+			out[k] = v
+		}
+		for k, v := range a {
+			if cur, ok := out[k]; !ok || v.Cmp(cur) > 0 {
+				out[k] = v
+			}
+		}
+		return out
+	}
+
 	sum := newResources()
 	for i := range pod.Spec.Containers {
-		sum.add(pod.Spec.Containers[i].Resources.Requests)
+		sum.add(req(&pod.Spec.Containers[i]))
 	}
 
 	sidecars := newResources()
@@ -78,12 +107,12 @@ func PodRequests(pod *corev1.Pod) Resources {
 	for i := range pod.Spec.InitContainers {
 		c := &pod.Spec.InitContainers[i]
 		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
-			sidecars.add(c.Resources.Requests)
+			sidecars.add(req(c))
 			initPeak.maxWith(sidecars) // the sidecar running alongside earlier ones
 			continue
 		}
 		step := sidecars.clone()
-		step.add(c.Resources.Requests)
+		step.add(req(c))
 		initPeak.maxWith(step)
 	}
 
@@ -94,6 +123,15 @@ func PodRequests(pod *corev1.Pod) Resources {
 		sum.Extended[name] += v
 	}
 	sum.maxWith(initPeak)
+
+	if pr := pod.Spec.Resources; pr != nil {
+		if q, ok := pr.Requests[corev1.ResourceCPU]; ok {
+			sum.CPUMilli = q.MilliValue()
+		}
+		if q, ok := pr.Requests[corev1.ResourceMemory]; ok {
+			sum.MemBytes = q.Value()
+		}
+	}
 
 	if pod.Spec.Overhead != nil {
 		sum.add(pod.Spec.Overhead)

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -96,6 +97,12 @@ type Input struct {
 	// not be read (RBAC, or an older resource.k8s.io version). Analysis then
 	// says "unknown" instead of "not found".
 	DRAClaimsError string
+	// Now is the analysis time, used to judge whether the scheduler has had a
+	// chance to try the pod. Zero disables the "scheduler silent" check.
+	Now time.Time
+	// SchedulerEventSeen is true when any FailedScheduling event exists for the
+	// pod (SchedulerEvent can be empty if the message was blank).
+	SchedulerEventSeen bool
 	// ReadErrors are API reads that failed for this pod (PVCs, events). They
 	// are surfaced as a Warning so a forbidden read is never silent.
 	ReadErrors []string
@@ -109,6 +116,8 @@ type Result struct {
 	Causes         []Cause       `json:"causes"`
 	Nodes          []NodeVerdict `json:"nodes,omitempty"`
 	SchedulerEvent string        `json:"schedulerEvent,omitempty"`
+	// SchedulerReasons is SchedulerEvent parsed into counted reasons.
+	SchedulerReasons []SchedulerReason `json:"schedulerReasons,omitempty"`
 }
 
 // HasBlocker reports whether any cause is a Blocker (used for the CLI exit code).
@@ -132,7 +141,7 @@ func Analyze(in Input) Result {
 		SchedulerEvent: in.SchedulerEvent,
 	}
 
-	pre, done := triage(in.Pod)
+	pre, done := triage(in)
 	res.Causes = append(res.Causes, pre...)
 	if done {
 		return res
@@ -193,6 +202,7 @@ func Analyze(in Input) Result {
 	var maxFreeCPU, maxFreeMem int64
 	var sumFreeCPU, sumFreeMem int64
 	var maxAllocCPU, maxAllocMem int64 // biggest single node, if it were empty
+	emptyFit := 0                      // eligible nodes big enough in BOTH dimensions
 
 	// Placement (nodeSelector / required nodeAffinity) is checked first: it says
 	// which nodes the user wants, so a pod pinned to a cordoned or tainted node
@@ -240,6 +250,9 @@ func Analyze(in Input) Result {
 		eligible++
 		eligibleViews = append(eligibleViews, nv)
 		alloc := Allocatable(node)
+		if alloc.CPUMilli >= req.CPUMilli && alloc.MemBytes >= req.MemBytes {
+			emptyFit++ // this one node could hold the pod if it were empty
+		}
 		if alloc.CPUMilli > maxAllocCPU {
 			maxAllocCPU = alloc.CPUMilli
 		}
@@ -367,7 +380,10 @@ func Analyze(in Input) Result {
 
 	// Resource analysis only matters when some nodes were otherwise eligible.
 	if eligible > 0 && fit == 0 && cpuMemFit == 0 {
-		fitsOnEmptyNode := req.CPUMilli <= maxAllocCPU && req.MemBytes <= maxAllocMem
+		// Per node, not per-dimension maxima: a 16 CPU / 8Gi node and a
+		// 4 CPU / 64Gi node can't hold a 12 CPU / 32Gi pod even though each
+		// dimension's maximum is big enough.
+		fitsOnEmptyNode := emptyFit > 0
 		fitsByTotalFree := req.CPUMilli <= sumFreeCPU && req.MemBytes <= sumFreeMem
 		// No eligible node has room for both CPU and memory (cpuMemFit == 0). If
 		// the cluster has enough in aggregate, that is fragmentation, even when
@@ -381,7 +397,7 @@ func Analyze(in Input) Result {
 				Severity: Blocker,
 				Title:    "Pod is larger than any single node",
 				Detail: fmt.Sprintf(
-					"Pod requests %s CPU / %s memory, but the biggest eligible node only has %s CPU / %s memory allocatable even when empty. A pod must fit on ONE node, so no amount of freeing-up will help.",
+					"Pod requests %s CPU / %s memory, but no eligible node has both that much CPU and memory allocatable, even when empty (largest CPU on any node: %s; largest memory: %s). A pod must fit on ONE node, so no amount of freeing-up will help.",
 					FormatCPU(req.CPUMilli), FormatMem(req.MemBytes),
 					FormatCPU(maxAllocCPU), FormatMem(maxAllocMem)),
 				Fix: "Reduce the pod's resource requests, split the workload, or add a node large enough to hold it.",
@@ -489,6 +505,10 @@ func Analyze(in Input) Result {
 		fit++
 	}
 
+	// Cross-check with the scheduler's own last verdict: turns "should fit"
+	// into the scheduler's reason when this tool doesn't model the filter.
+	res.Causes = append(res.Causes, crossCheck(&res, in.SchedulerEvent)...)
+
 	// Honest about the limits of a static analysis. Whenever no specific cause
 	// was found, say so explicitly rather than emitting an empty diagnosis —
 	// the wording differs depending on whether any node looked schedulable.
@@ -517,17 +537,39 @@ func Analyze(in Input) Result {
 	}
 
 	// The scheduler already has a plan (preemption / binding in progress), so
-	// nothing here is a hard blocker for the user to act on yet.
-	if in.Pod.Status.NominatedNodeName != "" {
-		for i := range res.Causes {
-			if res.Causes[i].Severity == Blocker {
-				res.Causes[i].Severity = Warning
+	// nothing here is a hard blocker yet, but only if the nominated node can
+	// still host the pod once victims leave: it must pass every static filter
+	// except capacity. A stale nomination can't fix a selector or a taint.
+	if nn := in.Pod.Status.NominatedNodeName; nn != "" {
+		if nominationViable(res.Nodes, nn) {
+			for i := range res.Causes {
+				if res.Causes[i].Severity == Blocker {
+					res.Causes[i].Severity = Warning
+				}
+			}
+		} else {
+			for i := range res.Causes {
+				if strings.HasPrefix(res.Causes[i].Title, "Scheduler nominated node") {
+					res.Causes[i].Detail += fmt.Sprintf("\nBut %s can't host this pod even after preemption (or no longer exists), so the nomination looks stale and the blockers below still apply.", nn)
+				}
 			}
 		}
 	}
 
 	sortCauses(res.Causes)
 	return res
+}
+
+// nominationViable reports whether the nominated node exists and fails, at
+// most, on capacity (which preempting lower-priority pods can free).
+func nominationViable(verdicts []NodeVerdict, node string) bool {
+	for _, v := range verdicts {
+		if v.Name != node {
+			continue
+		}
+		return v.Schedulable || strings.HasPrefix(v.Reason, "insufficient ") || strings.HasPrefix(v.Reason, "at max-pods")
+	}
+	return false
 }
 
 // controlPlaneTaint reports taints that mark control-plane / etcd nodes. Telling

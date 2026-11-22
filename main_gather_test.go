@@ -44,7 +44,7 @@ func TestLatestSchedulerEvent_FallbacksAndUID(t *testing.T) {
 		ev("e1", "new-uid", "0/3 nodes are available: older", now.Add(-time.Minute), true),
 		ev("e2", "new-uid", "0/3 nodes are available: newest", now.Add(-time.Second), true),
 	)
-	got, err := latestSchedulerEvent(context.Background(), client, p)
+	got, _, err := latestSchedulerEvent(context.Background(), client, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,5 +138,34 @@ func TestUnboundPVCs_StorageClassForbidden(t *testing.T) {
 	_, unbound, waiting, unknown, _ := unboundPVCs(context.Background(), client, p, map[string]storagev1.VolumeBindingMode{})
 	if len(unbound) != 0 || len(waiting) != 0 || len(unknown) != 1 || !strings.Contains(unknown[0], "forbidden") {
 		t.Fatalf("unbound=%v waiting=%v unknown=%v", unbound, waiting, unknown)
+	}
+}
+
+// Review 3 B9: with several default StorageClasses the newest one wins.
+func TestBindingMode_NewestDefaultWins(t *testing.T) {
+	wffc, imm := storagev1.VolumeBindingWaitForFirstConsumer, storagev1.VolumeBindingImmediate
+	def := map[string]string{"storageclass.kubernetes.io/is-default-class": "true"}
+	old := metav1.NewTime(time.Now().Add(-time.Hour))
+	client := fake.NewSimpleClientset(
+		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "old", Annotations: def, CreationTimestamp: old}, VolumeBindingMode: &imm},
+		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "new", Annotations: def, CreationTimestamp: metav1.Now()}, VolumeBindingMode: &wffc},
+	)
+	mode, err := bindingMode(context.Background(), client, &corev1.PersistentVolumeClaim{}, map[string]storagev1.VolumeBindingMode{})
+	if err != nil || mode != wffc {
+		t.Fatalf("mode=%s err=%v, want the newest default (WFFC)", mode, err)
+	}
+}
+
+// Review 3 B6: events from the pod's own (custom) scheduler count as "seen".
+func TestLatestSchedulerEvent_SeenByCustomScheduler(t *testing.T) {
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "default"}, Spec: corev1.PodSpec{SchedulerName: "volcano"}}
+	client := fake.NewSimpleClientset(&corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: "e1", Namespace: "default"},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: "x", Namespace: "default"},
+		Reason:         "Unschedulable", Source: corev1.EventSource{Component: "volcano"},
+	})
+	_, seen, err := latestSchedulerEvent(context.Background(), client, p)
+	if err != nil || !seen {
+		t.Fatalf("seen=%v err=%v", seen, err)
 	}
 }

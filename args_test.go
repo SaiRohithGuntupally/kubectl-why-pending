@@ -67,6 +67,7 @@ func TestParseArgs_Errors(t *testing.T) {
 		{"pod-a", "pod-b"},
 		{"--timeout=0s"},
 		{"-n"},
+		{"-A", "some-pod"},
 	} {
 		if _, err := parseArgs(args, &bytes.Buffer{}); err == nil || errors.Is(err, errHelp) {
 			t.Errorf("%v: want a usage error, got %v", args, err)

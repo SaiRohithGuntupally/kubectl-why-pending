@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -12,7 +13,18 @@ import (
 // before any capacity math runs. Running predicates on these produces confident
 // but fabricated blockers (audit risks 1 and 20), so Analyze returns early when
 // triage reports done=true.
-func triage(pod *corev1.Pod) (causes []Cause, done bool) {
+func triage(in Input) (causes []Cause, done bool) {
+	pod := in.Pod
+	// Bound to a node that isn't in the cluster: set by hand (spec.nodeName
+	// bypasses the scheduler) or the node was deleted. Nothing will run it.
+	if pod.Spec.NodeName != "" && len(in.Nodes) > 0 && !nodeExists(in.Nodes, pod.Spec.NodeName) {
+		return []Cause{{
+			Severity: Blocker,
+			Title:    fmt.Sprintf("Bound to node %s, which doesn't exist", pod.Spec.NodeName),
+			Detail:   fmt.Sprintf("spec.nodeName is %q but no such node is in the cluster. Setting nodeName skips the scheduler entirely, so nothing will move the pod; the pod garbage collector deletes pods bound to missing nodes.", pod.Spec.NodeName),
+			Fix:      "Remove spec.nodeName (use a nodeSelector on kubernetes.io/hostname instead) or fix the node name, then recreate the pod.",
+		}}, true
+	}
 	// Already bound: the scheduler finished its job. Pending now means the
 	// kubelet/runtime side (image pull, volume mount, sandbox, init containers).
 	if pod.Spec.NodeName != "" {
@@ -47,18 +59,58 @@ func triage(pod *corev1.Pod) (causes []Cause, done bool) {
 		}}, true
 	}
 
+	// No scheduler has tried this pod. With a custom schedulerName, that
+	// scheduler is likely not running (or doesn't watch this namespace); with
+	// the default one, kube-scheduler may be down or stuck on leader election.
+	since := pod.CreationTimestamp.Time
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodScheduled && c.LastTransitionTime.After(since) {
+			since = c.LastTransitionTime.Time // e.g. scheduling gates just lifted
+		}
+	}
+	if !in.SchedulerEventSeen && !in.Now.IsZero() && in.Now.Sub(since) > time.Minute {
+		name := pod.Spec.SchedulerName
+		if name == "" {
+			name = corev1.DefaultSchedulerName
+		}
+		age := in.Now.Sub(since).Round(time.Second)
+		if name != corev1.DefaultSchedulerName {
+			return []Cause{{
+				Severity: Blocker,
+				Title:    fmt.Sprintf("Scheduler %q has never tried this pod", name),
+				Detail:   fmt.Sprintf("The pod sets schedulerName: %s and has no scheduling events after %s. The default scheduler ignores pods that name another scheduler, so if %q isn't running (or doesn't handle this namespace) the pod waits forever. The checks this tool runs model the default scheduler only.", name, age, name),
+				Fix:      fmt.Sprintf("Check that the %q scheduler is deployed and healthy, or remove schedulerName to use the default scheduler.", name),
+			}}, true
+		}
+		causes = append(causes, Cause{
+			Severity: Warning,
+			Title:    "No scheduling events yet",
+			Detail:   fmt.Sprintf("The pod is %s old and kube-scheduler hasn't recorded a FailedScheduling event for it. Either it just retried successfully, or the scheduler isn't running (or is stuck on leader election).", age),
+			Fix:      "Check `kubectl -n kube-system get pods -l component=kube-scheduler` and `kubectl -n kube-system get lease kube-scheduler`.",
+		})
+	}
+
 	// Nominated node: the scheduler has a plan (usually preemption of
 	// lower-priority pods in progress, or a PreBind wait). Keep analysing, but
 	// Analyze downgrades blockers because the scheduler is already acting.
 	if pod.Status.NominatedNodeName != "" {
-		return []Cause{{
+		return append(causes, Cause{
 			Severity: Info,
 			Title:    fmt.Sprintf("Scheduler nominated node %s (preemption or binding in progress)", pod.Status.NominatedNodeName),
 			Detail:   "status.nominatedNodeName is set: the scheduler found a node, typically after choosing lower-priority pods to evict, and is waiting for them to terminate. The checks below show the state before that finishes.",
 			Fix:      "Usually nothing: wait for the preempted pods' graceful termination. If it stays this way, look for PodDisruptionBudgets or long terminationGracePeriodSeconds on the victims.",
-		}}, false
+		}), false
 	}
-	return nil, false
+	return causes, false
+}
+
+func nodeExists(nodes []NodeView, name string) bool {
+	for _, nv := range nodes {
+		if nv.Node.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // waitingReasons summarises why containers haven't started, e.g.

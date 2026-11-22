@@ -19,8 +19,8 @@ work comes before features, and anything not modelled is said out loud.
 | v0.6.0 | DRA device taints (k8s 1.37) | Released 2026-09-09 |
 | v0.7.0 | Stop the confident wrong answers | Released 2026-11-20 (krew-index #6712) |
 | v0.7.1 | Live-judge fixes | Released 2026-11-20 (krew-index #6713), retest passed |
-| v0.7.2 | Retest fixes + kubectl-standard flags | Code done, unreleased |
-| v0.7.3 | Cross-check with the scheduler, finish fidelity | Next |
+| v0.7.2 | Retest fixes + kubectl-standard flags | Released 2026-11-20 (krew-index #6714) |
+| v0.7.3 | Review-3 fixes, then the scheduler cross-check | Released 2026-11-22, kind e2e 20/20 |
 | v0.8.0 | Usability: readable output, real fix commands | Planned |
 | v0.9.0 | Explain more than one stuck pod; deeper GPU/DRA | Planned |
 | v1.0.0 | Stable JSON contract + agent surface | Planned |
@@ -125,12 +125,54 @@ Done (2026-11-20):
 
 Retest timing: `-A` across the 6-node cluster in 3.6s.
 
-## v0.7.3: finish scheduler fidelity
+## v0.7.3: review 3 fixes + finish scheduler fidelity
+
+Review 3 (full live report on v0.7.1, RKE2 1.35, 2026-11-20) listed 13 open
+bugs. Done (unreleased):
+
+- [x] **B1** "Larger than any node" compared per-dimension maxima from
+      different nodes (16 CPU / 8Gi + 4 CPU / 64Gi vs a 12 CPU / 32Gi pod said
+      "defragment"). Now counts nodes where both fit when empty.
+- [x] **B2** Any `nominatedNodeName` downgraded every Blocker. Now only when
+      the nominated node exists and fails at most on capacity (preemption can
+      free that); otherwise the nomination is called stale.
+- [x] **B3** `spec.nodeName` of a node that doesn't exist: Blocker naming it
+      (nodeName skips the scheduler; PodGC deletes the pod).
+- [x] **B4** `-A some-pod` was an API 404; now a usage error (exit 2).
+- [x] **B6** Scheduler silence in triage: custom `schedulerName` with no events
+      after 1 min is a Blocker; the default scheduler gets a Warning pointing
+      at the kube-scheduler pods and lease. The clock starts at the later of
+      creation and the PodScheduled transition (so lifted gates don't count).
+- [x] **B9** Several default StorageClasses: the newest wins, as in admission.
+- [x] **B11** In-place resize (GA 1.35): a container's request is the larger
+      of spec and `allocatedResources`.
+- [x] **G1** Pod-level `spec.resources` replaces the container sum for
+      cpu/memory, for the pending pod and for every running pod's usage.
+- [x] B5, B8, B10 were already fixed in v0.7.2 (review 3 covered v0.7.1).
+- [x] e2e: s14 pod-level resources, s16 missing scheduler, s17 hostPort
+      (known gap); wait raised to 75s. The ghost-node repro isn't in e2e
+      because PodGC deletes it within ~40s; it's a unit test.
+
+- [x] **Scheduler cross-check** (item 1 below, the review's top feature):
+      the FailedScheduling message is parsed into counted reasons
+      (`schedulerReasons` in JSON). With no blocker of its own, the tool now
+      reports each scheduler reason as a Blocker, labelled "not modelled here"
+      (hostPorts, PV node affinity / zones, attach limits, RWOP, unknown
+      plugins) or "this tool's model disagrees" (modelled filters). With
+      blockers, unmodelled scheduler reasons add one Warning. "We found X, the
+      scheduler didn't say X" is deliberately not flagged: the scheduler stops
+      at the first failing filter per node in a different order. Wording
+      table tested for 1.26-1.37 messages. Review 3 R2 (hostPort) and R3 (PV
+      on a missing node) go from "should fit", exit 0, to a named Blocker.
+
+Not done: **B7** quota / admission (needs workload targets, v0.9.0).
 
 Remaining correctness items, ordered by how often they cause a wrong answer.
+Review 3 asks to pull G5 (`matchLabelKeys`, false Blockers during rollouts)
+and hostPorts (G2) up: both now lead the list after the cross-check.
 
-1. **Cross-check against the scheduler's own verdict** (review, M, highest
-   value): parse the FailedScheduling message (`0/N nodes are available: 3
+1. ~~Cross-check against the scheduler's own verdict~~ done (see above).
+   Original plan: parse the FailedScheduling message (`0/N nodes are available: 3
    Insufficient cpu, 2 node(s) had untolerated taint ...`) into per-reason
    counts and compare with this tool's per-node verdicts. Agreement = explain
    each count in plain English. Disagreement = say so ("the scheduler reports 2
@@ -150,7 +192,11 @@ Remaining correctness items, ordered by how often they cause a wrong answer.
 4. **Record every failing predicate per node** (risk 21, S): counts stop being
    check-order artifacts; fix hints stop pointing at a node that fails
    something else too.
-5. **Topology spread rest** (risk 7 rest, S): `minDomains`, `matchLabelKeys`.
+5. **Topology spread rest** (risk 7 rest, S, review 3 G4/G5: do first after
+   item 1): `matchLabelKeys` (old ReplicaSet pods counted = false Blocker
+   mid-rollout), `minDomains`.
+   **hostPorts** (review 3 G2, S): rke2-traefik holds 443 on every worker;
+   today that's "should fit".
    Affinity `namespaceSelector` with labels (needs a namespaces list; today such
    terms are skipped rather than guessed).
 6. **Units** (risk 23, S): hugepages rendered as bytes (`2Mi`), not
@@ -164,8 +210,11 @@ Remaining correctness items, ordered by how often they cause a wrong answer.
    look up by pod UID / claim name. Today `-A` does one events LIST plus one
    GET per PVC per pending pod, sequentially, inside a 30s deadline: hundreds
    of Pending pods during an incident hit the timeout.
-10. **Pod-level `spec.resources`** (beta, on by default since 1.34) in request
-    math.
+10. ~~Pod-level `spec.resources`~~ done (review 3 G1).
+11. **CI hardening** (review 3 F10): run the kind e2e kit on PRs,
+    `golangci-lint`, `govulncheck`, Actions pinned by SHA.
+12. **"Largest request that fits now"** hint on capacity blockers (review 3
+    F7), e.g. "max 7.3 CPU / 14.6Gi on node X".
 
 Exit criterion: each item lands with an e2e scenario in `e2e/scenarios/`
 (volume pinning and sidecars need real kind clusters to be believable).

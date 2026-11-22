@@ -64,6 +64,9 @@ func parseArgs(args []string, out io.Writer) (options, error) {
 	default:
 		return o, fmt.Errorf("invalid --output %q (want text, json, or yaml)", o.output)
 	}
+	if o.allNamespaces && o.podName != "" {
+		return o, fmt.Errorf("-A can't be combined with a pod name; use -n <namespace> %s", o.podName)
+	}
 	if o.timeout <= 0 {
 		return o, fmt.Errorf("--timeout must be positive, got %s", o.timeout)
 	}

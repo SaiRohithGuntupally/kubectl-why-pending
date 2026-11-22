@@ -6,6 +6,7 @@ package diagnose
 import (
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -234,10 +235,15 @@ func TestDRAUnreadableIsNotNotFound(t *testing.T) {
 
 // Review 2026-11-20 #2: the largest free CPU and the largest free memory sit on
 // different nodes. Aggregate is enough, so this is fragmentation, not
-// "insufficient". Node A: 4 CPU / 1Gi free, node B: 1 CPU / 8Gi free; pod 2/4Gi.
+// "insufficient". Both nodes 8 CPU / 16Gi; A has 4 CPU / 1Gi free, B has
+// 1 CPU / 8Gi free; pod 2 / 4Gi fits either node when empty.
 func TestFragmentationAcrossDimensions(t *testing.T) {
-	a, b := readyNode("a", "4", "1Gi"), readyNode("b", "1", "8Gi")
-	r := Analyze(Input{Pod: pod("2", "4Gi"), Nodes: []NodeView{{Node: a}, {Node: b}}})
+	a, b := readyNode("a", "8", "16Gi"), readyNode("b", "8", "16Gi")
+	gi := int64(1 << 30)
+	r := Analyze(Input{Pod: pod("2", "4Gi"), Nodes: []NodeView{
+		{Node: a, Used: Resources{CPUMilli: 4000, MemBytes: 15 * gi}},
+		{Node: b, Used: Resources{CPUMilli: 7000, MemBytes: 8 * gi}},
+	}})
 	if !hasCause(r, "fragmentation") || hasCause(r, "Insufficient free capacity") {
 		t.Fatalf("want fragmentation, got: %s", titles(r))
 	}
@@ -447,5 +453,85 @@ func TestUnknownPVCBindingIsWarning(t *testing.T) {
 	})
 	if r.HasBlocker() || !hasCause(r, "couldn't read the StorageClass") {
 		t.Fatalf("want a warning, not a blocker: %s", titles(r))
+	}
+}
+
+// Review 3 B1: per-dimension maxima from different nodes must not make a pod
+// look like it fits "on an empty node". 16 CPU / 8Gi + 4 CPU / 64Gi, pod
+// 12 CPU / 32Gi: no node can ever hold it, so no "defragment" advice.
+func TestTooBigMixedShapes(t *testing.T) {
+	r := Analyze(Input{Pod: pod("12", "32Gi"), Nodes: []NodeView{
+		{Node: readyNode("cpu-heavy", "16", "8Gi")}, {Node: readyNode("mem-heavy", "4", "64Gi")},
+	}})
+	if !hasCause(r, "larger than any single node") || hasCause(r, "fragmentation") {
+		t.Fatalf("want too-big, got: %s", titles(r))
+	}
+}
+
+// Review 3 B2: a stale nomination must not downgrade a selector blocker.
+func TestStaleNominationKeepsBlocker(t *testing.T) {
+	p := pod("100m", "64Mi")
+	p.Spec.NodeSelector = map[string]string{"disk": "nvme"}
+	p.Status.NominatedNodeName = "n1"
+	r := Analyze(Input{Pod: p, Nodes: []NodeView{{Node: readyNode("n1", "4", "8Gi")}}})
+	if !r.HasBlocker() {
+		t.Fatalf("stale nomination hid the selector blocker: %s", titles(r))
+	}
+	// A viable nomination (capacity only, preemption in flight) still downgrades.
+	q := pod("6", "64Mi")
+	q.Status.NominatedNodeName = "n1"
+	r = Analyze(Input{Pod: q, Nodes: []NodeView{{Node: readyNode("n1", "8", "8Gi"), Used: Resources{CPUMilli: 4000}}}})
+	if r.HasBlocker() {
+		t.Fatalf("viable nomination should downgrade: %s", titles(r))
+	}
+}
+
+// Review 3 B3: bound to a node that doesn't exist.
+func TestBoundToMissingNode(t *testing.T) {
+	p := pod("100m", "64Mi")
+	p.Spec.NodeName = "ghost"
+	r := Analyze(Input{Pod: p, Nodes: []NodeView{{Node: readyNode("n1", "4", "8Gi")}}})
+	if !r.HasBlocker() || !hasCause(r, "doesn't exist") {
+		t.Fatalf("want missing-node blocker: %s", titles(r))
+	}
+}
+
+// Review 3 B6: custom scheduler that never acted; and the default-scheduler
+// silence warning.
+func TestSchedulerSilence(t *testing.T) {
+	now := time.Now()
+	p := pod("100m", "64Mi")
+	p.CreationTimestamp = metav1.NewTime(now.Add(-5 * time.Minute))
+	p.Spec.SchedulerName = "ghost-scheduler"
+	nodes := []NodeView{{Node: readyNode("n1", "4", "8Gi")}}
+	r := Analyze(Input{Pod: p, Nodes: nodes, Now: now})
+	if !r.HasBlocker() || !hasCause(r, `"ghost-scheduler" has never tried`) {
+		t.Fatalf("want custom scheduler blocker: %s", titles(r))
+	}
+	p.Spec.SchedulerName = ""
+	r = Analyze(Input{Pod: p, Nodes: nodes, Now: now})
+	if !hasCause(r, "No scheduling events yet") {
+		t.Fatalf("want silence warning: %s", titles(r))
+	}
+	r = Analyze(Input{Pod: p, Nodes: nodes, Now: now, SchedulerEventSeen: true})
+	if hasCause(r, "No scheduling events") || hasCause(r, "never tried") {
+		t.Fatalf("event seen, no silence cause expected: %s", titles(r))
+	}
+}
+
+// Review 3 G1 + B11: pod-level resources and in-place resize allocations.
+func TestPodRequests_PodLevelAndResize(t *testing.T) {
+	p := pod("0", "0")
+	p.Spec.Resources = &corev1.ResourceRequirements{Requests: corev1.ResourceList{
+		corev1.ResourceCPU: resource.MustParse("7600m"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+	}}
+	if r := PodRequests(p); r.CPUMilli != 7600 || r.MemBytes != 64<<20 {
+		t.Fatalf("pod-level resources ignored: %+v", r)
+	}
+	q := pod("1", "1Gi")
+	q.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: q.Spec.Containers[0].Name,
+		AllocatedResources: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3")}}}
+	if r := PodRequests(q); r.CPUMilli != 3000 || r.MemBytes != 1<<30 {
+		t.Fatalf("resize allocation not maxed in: %+v", r)
 	}
 }

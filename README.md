@@ -112,18 +112,26 @@ Then the real scheduling causes:
   `WaitForFirstConsumer` StorageClass is reported as expected, not as a blocker.
 - **Failed reads are reported**, never silent: a forbidden PVC or event read
   shows up as a warning instead of a wrong conclusion.
+- Pods bound to a node that doesn't exist, and pods whose `schedulerName`
+  names a scheduler that never acted (or a default scheduler that is silent).
+- Pod-level `spec.resources` and in-place resize allocations in request math.
+- Cross-checks the scheduler's own FailedScheduling message: a reason this
+  tool doesn't model (hostPort, PV node affinity, attach limits) is reported
+  as the scheduler's Blocker instead of "should fit", and a disagreement with
+  the model is labelled as one.
 - Falls back to the raw scheduler event + dynamic-cause hints (priority/preemption)
   when no static blocker is found.
 
 ## What it doesn't model yet
 
 It's a static re-check, not the scheduler itself, so some filters are missing.
-When one of these is the cause, the tool says it found no static blocker and
-shows the scheduler's own event:
+When one of these is the cause, the scheduler cross-check reports the
+scheduler's reason (if a FailedScheduling event exists); otherwise the tool
+says it found no static blocker:
 
 - hostPort conflicts, CSI volume attach limits
 - PersistentVolume node affinity / volume zones (local-path, OpenEBS, TopoLVM)
-- pod-level `spec.resources`
+- quota / admission rejections (no pod exists to diagnose)
 - topology spread `minDomains` / `matchLabelKeys`, affinity `namespaceSelector`
   with labels
 - DRA device selectors, counts and per-node device placement

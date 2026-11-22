@@ -1,0 +1,8 @@
+# EXPECT: after 1 min with no events, Blocker "Scheduler ... has never tried this
+# pod" (live review 3, R4). run.sh waits long enough for this.
+apiVersion: v1
+kind: Pod
+metadata: {name: ghost-scheduler, namespace: s16}
+spec:
+  schedulerName: why-pending-ghost-scheduler
+  containers: [{name: c, image: registry.k8s.io/pause:3.10}]

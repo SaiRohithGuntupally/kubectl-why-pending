@@ -1,7 +1,7 @@
 # ns	want_exit	want_substring	type(works|known-bug)	note   (w* rows were v0.6.0 bugs, fixed for v0.7.0)
 s01	1	larger than any single node	works
 s02	1	nodeSelector	works
-s03	1	taints the pod doesn't tolerate	works
+s03	1	taints it doesn't tolerate	works
 s04	1	PersistentVolumeClaim(s) not found	works
 s05	1	No eligible node provides example.com/widget	works	json nodes[] must have no schedulable:true (risk 11)
 s06	1	anti-affinity unsatisfied	works
@@ -16,3 +16,6 @@ s10	1	larger than any single node	works	RuntimeClass overhead (live report #19)
 s11	1	fragmentation	works	cross-dimension (live report #21)
 s12	1	not found in the cluster	works	DRA, no driver (live report #17)
 s13	1	carry taints it doesn't tolerate	works	pinned to tainted node names it (live report #4)
+s14	1	larger than any single node	works	pod-level spec.resources (review 3 R1)
+s16	1	has never tried this pod	works	custom scheduler not running (review 3 R4)
+s17	1	free ports	works	hostPort via scheduler cross-check (review 3 R2)

@@ -112,26 +112,29 @@ func run(client kubernetes.Interface, opts options) (bool, error) {
 		if p.Spec.NodeName == "" {
 			missing, unbound, waiting, unknownPVCs, readErrs = unboundPVCs(ctx, client, p, classModes)
 		}
-		event, err := latestSchedulerEvent(ctx, client, p)
+		event, seen, err := latestSchedulerEvent(ctx, client, p)
 		if err != nil {
 			readErrs = append(readErrs, "events: "+err.Error())
+			seen = true // unknown: don't claim the scheduler is silent
 		}
 		in := diagnose.Input{
-			Pod:            p,
-			Nodes:          nodeViews,
-			ClusterPods:    clusterPods,
-			SchedulerEvent: event,
-			ReadErrors:     readErrs,
-			MissingPVCs:    missing,
-			UnboundPVCs:    unbound,
-			WaitingPVCs:    waiting,
-			UnknownPVCs:    unknownPVCs,
-			DRAClaimsError: draClaimErrs[p.Namespace],
-			Chain:          &chain,
-			DRAClaims:      draClaims,
-			DRASlices:      draSlices,
-			DRAClasses:     draClasses,
-			DRATaintRules:  draTaintRules,
+			Pod:                p,
+			Nodes:              nodeViews,
+			ClusterPods:        clusterPods,
+			SchedulerEvent:     event,
+			SchedulerEventSeen: seen,
+			Now:                time.Now(),
+			ReadErrors:         readErrs,
+			MissingPVCs:        missing,
+			UnboundPVCs:        unbound,
+			WaitingPVCs:        waiting,
+			UnknownPVCs:        unknownPVCs,
+			DRAClaimsError:     draClaimErrs[p.Namespace],
+			Chain:              &chain,
+			DRAClaims:          draClaims,
+			DRASlices:          draSlices,
+			DRAClasses:         draClasses,
+			DRATaintRules:      draTaintRules,
 		}
 		results = append(results, diagnose.Analyze(in))
 	}
@@ -386,23 +389,34 @@ func gatherDeviceTaintRules(ctx context.Context, client kubernetes.Interface) []
 // eventTime, lastTimestamp and firstTimestamp the way kubectl's printer does.
 // Events for an older pod with the same name (StatefulSet recreation) are
 // skipped by UID.
-func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) (string, error) {
+//
+// seen reports whether any scheduler has recorded an event for the pod (a
+// FailedScheduling from anyone, or any event whose source is the pod's
+// schedulerName), which triage uses to spot a scheduler that never acted.
+func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *corev1.Pod) (msg string, seen bool, err error) {
 	selector := "involvedObject.name=" + p.Name + ",involvedObject.kind=Pod"
 	if p.UID != "" {
 		selector += ",involvedObject.uid=" + string(p.UID)
 	}
 	events, err := client.CoreV1().Events(p.Namespace).List(ctx, metav1.ListOptions{FieldSelector: selector})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	var msg string
+	sched := p.Spec.SchedulerName
+	if sched == "" {
+		sched = corev1.DefaultSchedulerName
+	}
 	var latest time.Time
 	found := false
 	for i := range events.Items {
 		e := &events.Items[i]
+		if e.Source.Component == sched || e.ReportingController == sched {
+			seen = true
+		}
 		if e.Reason != "FailedScheduling" {
 			continue
 		}
+		seen = true
 		if e.InvolvedObject.Kind != "Pod" || e.InvolvedObject.Name != p.Name {
 			continue
 		}
@@ -416,7 +430,7 @@ func latestSchedulerEvent(ctx context.Context, client kubernetes.Interface, p *c
 			msg = strings.TrimSpace(e.Message)
 		}
 	}
-	return msg, nil
+	return msg, seen, nil
 }
 
 func eventTime(e *corev1.Event) time.Time {
@@ -501,12 +515,20 @@ func bindingMode(ctx context.Context, client kubernetes.Interface, pvc *corev1.P
 		if err != nil {
 			return "", fmt.Errorf("couldn't list StorageClasses to find the default: %w", err)
 		}
+		// Several defaults: the admission plugin picks the most recently
+		// created one, so do the same.
+		var def *storagev1.StorageClass
 		for i := range list.Items {
 			sc := &list.Items[i]
-			if sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" && sc.VolumeBindingMode != nil {
-				mode = *sc.VolumeBindingMode
-				break
+			if sc.Annotations["storageclass.kubernetes.io/is-default-class"] != "true" {
+				continue
 			}
+			if def == nil || sc.CreationTimestamp.After(def.CreationTimestamp.Time) {
+				def = sc
+			}
+		}
+		if def != nil && def.VolumeBindingMode != nil {
+			mode = *def.VolumeBindingMode
 		}
 	} else {
 		sc, err := client.StorageV1().StorageClasses().Get(ctx, class, metav1.GetOptions{})
